@@ -1,0 +1,131 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id            String                @id @default(uuid())
+  name          String
+  email         String                @unique
+  passwordHash  String
+  createdAt     DateTime              @default(now())
+  statusChanges TicketStatusHistory[]
+  auditLogs     AuditLog[]
+
+  @@map("users")
+}
+
+model Project {
+  id          String         @id @default(uuid())
+  code        String         @unique
+  name        String
+  description String         @default("")
+  gitRepoUrl  String         @default("")
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  columns     KanbanColumn[]
+  labels      Label[]
+  tickets     Ticket[]
+  phases      Phase[]
+
+  @@map("projects")
+}
+
+model KanbanColumn {
+  id        String   @id @default(uuid())
+  projectId String
+  name      String
+  position  Int
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tickets   Ticket[]
+
+  @@map("kanban_columns")
+}
+
+model Label {
+  id        String   @id @default(uuid())
+  projectId String
+  name      String
+  color     String   @default("#888888")
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tickets   Ticket[]
+
+  @@map("labels")
+}
+
+model Ticket {
+  id                     String                @id @default(uuid())
+  projectId              String
+  number                 Int
+  parentTicketId         String?
+  name                   String
+  description            String                @default("")
+  columnId               String
+  complexity             Int
+  labelId                String?
+  phaseId                String?
+  tokensConsumed         Int                   @default(0)
+  llmName                String?
+  developmentTimeMinutes Int                   @default(0)
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+  project                Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  column                 KanbanColumn          @relation(fields: [columnId], references: [id])
+  label                  Label?                @relation(fields: [labelId], references: [id], onDelete: SetNull)
+  phase                  Phase?                @relation(fields: [phaseId], references: [id], onDelete: SetNull)
+  parent                 Ticket?               @relation("Subtickets", fields: [parentTicketId], references: [id], onDelete: Cascade)
+  subtickets             Ticket[]              @relation("Subtickets")
+  history                TicketStatusHistory[]
+
+  @@unique([projectId, number])
+  @@map("tickets")
+}
+
+model TicketStatusHistory {
+  id              String   @id @default(uuid())
+  ticketId        String
+  fromColumnName  String
+  toColumnName    String
+  changedByUserId String
+  changedAt       DateTime @default(now())
+  tokensDelta     Int?
+  timeDelta       Int?
+  ticket          Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  changedBy       User     @relation(fields: [changedByUserId], references: [id])
+
+  @@map("ticket_status_history")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String
+  action     String
+  entityType String
+  entityId   String
+  detail     Json     @default("{}")
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id])
+
+  @@map("audit_log")
+}
+
+model ProjectCodeCounter {
+  id Int @id @default(autoincrement())
+
+  @@map("project_code_counter")
+}
+
+model Phase {
+  id          String   @id @default(uuid())
+  projectId   String
+  name        String
+  description String   @default("")
+  position    Int
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tickets     Ticket[]
+
+  @@map("phases")
+}

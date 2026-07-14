@@ -1,0 +1,24 @@
+node_modules/
+dist/
+.next/
+coverage/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+
+# Claude Code session state (per-machine / per-repo, not shared)
+.claude/.session-state.json
+.claude/.session-tokens-state.json
+.claude/scheduled_tasks.lock
+.claude/ticket-project.json
+
+# Internal / pre-publication material — not part of the public project
+claude-full-control.bat
+docs/REQUIREMENTS.md
+docs/*.pdf
+docs/rename-to-lumberjack-tasks.md
+docs/superpowers/
+scripts/rename-checkout.ps1
+scripts/migrate-to-lumberjack-tasks.sh
+docker/migrations/

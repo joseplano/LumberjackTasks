@@ -1,0 +1,15 @@
+{
+  "name": "lumberjack-tasks",
+  "owner": {
+    "name": "jose.plano"
+  },
+  "description": "Kanban ticket system driven by Claude Code",
+  "plugins": [
+    {
+      "name": "lumberjack-tasks",
+      "source": "./plugin",
+      "description": "Track work as kanban tickets from Claude Code, backed by the Lumberjack Tasks stack.",
+      "version": "2.0.0"
+    }
+  ]
+}

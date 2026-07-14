@@ -1,0 +1,89 @@
+# Pinned so the volume and network names come from the product, not from whatever
+# the checkout directory happens to be called.
+name: lumberjack-tasks
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: lumberjack_tasks_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lumberjack_tasks
+      POSTGRES_PASSWORD: lumberjack_tasks
+      POSTGRES_DB: lumberjack_tasks
+    ports:
+      - "5434:5432"
+    volumes:
+      - lumberjack_tasks_pgdata:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lumberjack_tasks -d lumberjack_tasks"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    container_name: lumberjack_tasks_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://lumberjack_tasks:lumberjack_tasks@db:5432/lumberjack_tasks
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: "4000"
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+    ports:
+      - "4000:4000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:4000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  frontend:
+    build: ./frontend
+    container_name: lumberjack_tasks_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:3000/login"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  mcp:
+    build: ./mcp
+    container_name: lumberjack_tasks_mcp
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: http://backend:4000
+      MCP_JWT: ${MCP_JWT:-}
+      MCP_EMAIL: ${MCP_EMAIL:-}
+      MCP_PASSWORD: ${MCP_PASSWORD:-}
+      PORT: "5000"
+      # Bind to all interfaces INSIDE the container so Docker's port publish can reach it.
+      # Exposure is still limited: the host publish below is pinned to 127.0.0.1 only.
+      MCP_HOST: "0.0.0.0"
+    ports:
+      - "127.0.0.1:5000:5000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:5000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  lumberjack_tasks_pgdata:

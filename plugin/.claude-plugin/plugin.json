@@ -1,0 +1,15 @@
+{
+  "name": "lumberjack-tasks",
+  "displayName": "Lumberjack Tasks",
+  "version": "2.0.0",
+  "description": "Track work as kanban tickets from Claude Code, backed by the Lumberjack Tasks stack.",
+  "author": {
+    "name": "jose.plano"
+  },
+  "mcpServers": {
+    "lumberjack-tasks": {
+      "type": "http",
+      "url": "${LUMBERJACK_TASKS_MCP_URL:-http://127.0.0.1:5000/mcp}"
+    }
+  }
+}

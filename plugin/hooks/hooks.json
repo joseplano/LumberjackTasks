@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/ticket-project-context.mjs\"",
+            "timeout": 10,
+            "statusMessage": "Loading ticket-project mapping"
+          }
+        ]
+      }
+    ]
+  }
+}

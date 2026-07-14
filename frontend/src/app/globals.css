@@ -1,0 +1,169 @@
+@import "tailwindcss";
+
+/*
+ * Omarchy themes. Palettes are copied verbatim from basecamp/omarchy at
+ * themes/<name>/colors.toml, which every theme ships with the same 22 keys.
+ * Only the raw keys live here; UI tokens are derived below, once.
+ */
+
+:root,
+[data-theme="tokyo-night"] {
+  --omarchy-bg: #1a1b26;
+  --omarchy-fg: #a9b1d6;
+  --omarchy-accent: #7aa2f7;
+  --omarchy-red: #f7768e;
+  --omarchy-green: #9ece6a;
+  --omarchy-yellow: #e0af68;
+  --omarchy-cyan: #449dab;
+  --omarchy-selection-bg: #7aa2f7;
+  --omarchy-selection-fg: #c0caf5;
+}
+
+[data-theme="catppuccin"] {
+  --omarchy-bg: #1e1e2e;
+  --omarchy-fg: #cdd6f4;
+  --omarchy-accent: #89b4fa;
+  --omarchy-red: #f38ba8;
+  --omarchy-green: #a6e3a1;
+  --omarchy-yellow: #f9e2af;
+  --omarchy-cyan: #94e2d5;
+  --omarchy-selection-bg: #f5e0dc;
+  --omarchy-selection-fg: #1e1e2e;
+}
+
+[data-theme="everforest"] {
+  --omarchy-bg: #2d353b;
+  --omarchy-fg: #d3c6aa;
+  --omarchy-accent: #7fbbb3;
+  --omarchy-red: #e67e80;
+  --omarchy-green: #a7c080;
+  --omarchy-yellow: #dbbc7f;
+  --omarchy-cyan: #83c092;
+  --omarchy-selection-bg: #d3c6aa;
+  --omarchy-selection-fg: #2d353b;
+}
+
+[data-theme="gruvbox"] {
+  --omarchy-bg: #282828;
+  --omarchy-fg: #d4be98;
+  --omarchy-accent: #7daea3;
+  --omarchy-red: #ea6962;
+  --omarchy-green: #a9b665;
+  --omarchy-yellow: #d8a657;
+  --omarchy-cyan: #89b482;
+  --omarchy-selection-bg: #d65d0e;
+  --omarchy-selection-fg: #ebdbb2;
+}
+
+[data-theme="nord"] {
+  --omarchy-bg: #2e3440;
+  --omarchy-fg: #d8dee9;
+  --omarchy-accent: #81a1c1;
+  --omarchy-red: #bf616a;
+  --omarchy-green: #a3be8c;
+  --omarchy-yellow: #ebcb8b;
+  --omarchy-cyan: #88c0d0;
+  --omarchy-selection-bg: #4c566a;
+  --omarchy-selection-fg: #d8dee9;
+}
+
+[data-theme="catppuccin-latte"] {
+  --omarchy-bg: #eff1f5;
+  --omarchy-fg: #4c4f69;
+  --omarchy-accent: #1e66f5;
+  --omarchy-red: #d20f39;
+  --omarchy-green: #40a02b;
+  --omarchy-yellow: #df8e1d;
+  --omarchy-cyan: #179299;
+  --omarchy-selection-bg: #dc8a78;
+  --omarchy-selection-fg: #eff1f5;
+}
+
+[data-theme="rose-pine-dawn"] {
+  --omarchy-bg: #faf4ed;
+  --omarchy-fg: #575279;
+  --omarchy-accent: #56949f;
+  --omarchy-red: #b4637a;
+  --omarchy-green: #286983;
+  --omarchy-yellow: #ea9d34;
+  --omarchy-cyan: #d7827e;
+  --omarchy-selection-bg: #dfdad9;
+  --omarchy-selection-fg: #575279;
+}
+
+/*
+ * UI tokens. Surfaces, borders and muted text are mixed against bg/fg rather
+ * than taken from the ANSI slots: color0/color7/color8 invert direction between
+ * light and dark palettes (in Rose Pine Dawn color7 equals foreground), so a raw
+ * mapping renders invisible on some themes. Mixing is correct in both polarities.
+ */
+@theme inline {
+  --color-bg: var(--omarchy-bg);
+  --color-fg: var(--omarchy-fg);
+  --color-accent: var(--omarchy-accent);
+  --color-danger: var(--omarchy-red);
+  --color-success: var(--omarchy-green);
+  --color-warning: var(--omarchy-yellow);
+  --color-info: var(--omarchy-cyan);
+
+  --color-surface: color-mix(in oklab, var(--omarchy-bg) 94%, var(--omarchy-fg));
+  --color-surface-2: color-mix(in oklab, var(--omarchy-bg) 90%, var(--omarchy-fg));
+  --color-border: color-mix(in oklab, var(--omarchy-bg) 82%, var(--omarchy-fg));
+  --color-fg-muted: color-mix(in oklab, var(--omarchy-fg) 65%, var(--omarchy-bg));
+  --color-fg-faint: color-mix(in oklab, var(--omarchy-fg) 40%, var(--omarchy-bg));
+
+  --radius-omarchy: 8px;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, "Cascadia Code", monospace;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  html[data-theme="catppuccin-latte"],
+  html[data-theme="rose-pine-dawn"] {
+    color-scheme: light;
+  }
+
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-mono);
+  }
+
+  ::selection {
+    background-color: var(--omarchy-selection-bg);
+    color: var(--omarchy-selection-fg);
+  }
+
+  /* Thin themed scrollbars, matching the terminal-first feel. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--color-border);
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-fg-faint);
+  }
+
+  /* Hyprland-ish focus: a 1px accent ring rather than a heavy halo. */
+  :focus-visible {
+    outline: 1px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+}
