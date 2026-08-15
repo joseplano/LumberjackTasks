@@ -7,6 +7,9 @@ coverage/
 !.env.example
 *.tsbuildinfo
 
+# Local secrets
+.mcp-bot-password
+
 # Claude Code session state (per-machine / per-repo, not shared)
 .claude/.session-state.json
 .claude/.session-tokens-state.json
