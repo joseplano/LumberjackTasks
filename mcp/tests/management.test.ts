@@ -129,6 +129,73 @@ describe('manage_columns', () => {
     await close();
   });
 
+  it('issues set_completion as a PATCH with exactly { isCompletionColumn }', async () => {
+    const calls = stubBackendFetch(() => ({ status: 200, body: { id: 'c1', isCompletionColumn: true } }));
+    const { client, close } = await connectClient();
+    const result = await client.callTool({
+      name: 'manage_columns',
+      arguments: { projectId: 'p1', action: 'set_completion', columnId: 'c1', isCompletionColumn: true },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(calls[0].init.method).toBe('PATCH');
+    expect(calls[0].url.pathname).toBe('/api/v1/projects/p1/columns/c1');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ isCompletionColumn: true });
+    await close();
+  });
+
+  it('issues set_completion with isCompletionColumn: false to clear the designation', async () => {
+    const calls = stubBackendFetch(() => ({ status: 200, body: { id: 'c1', isCompletionColumn: false } }));
+    const { client, close } = await connectClient();
+    const result = await client.callTool({
+      name: 'manage_columns',
+      arguments: { projectId: 'p1', action: 'set_completion', columnId: 'c1', isCompletionColumn: false },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ isCompletionColumn: false });
+    await close();
+  });
+
+  it('rejects set_completion without columnId before hitting the backend', async () => {
+    const calls = stubBackendFetch(() => ({ status: 200, body: {} }));
+    const { client, close } = await connectClient();
+    const result = await client.callTool({
+      name: 'manage_columns',
+      arguments: { projectId: 'p1', action: 'set_completion', isCompletionColumn: true },
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toBe('columnId is required for action "set_completion"');
+    expect(calls).toHaveLength(0);
+    await close();
+  });
+
+  it('rejects set_completion without isCompletionColumn before hitting the backend', async () => {
+    const calls = stubBackendFetch(() => ({ status: 200, body: {} }));
+    const { client, close } = await connectClient();
+    const result = await client.callTool({
+      name: 'manage_columns',
+      arguments: { projectId: 'p1', action: 'set_completion', columnId: 'c1' },
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toBe('isCompletionColumn is required for action "set_completion"');
+    expect(calls).toHaveLength(0);
+    await close();
+  });
+
+  it('surfaces a 409 COMPLETION_COLUMN_CONFLICT from set_completion through the run/BackendError path', async () => {
+    stubBackendFetch(() => ({
+      status: 409,
+      body: { error: { code: 'COMPLETION_COLUMN_CONFLICT', message: 'Another designation won the race' } },
+    }));
+    const { client, close } = await connectClient();
+    const result = await client.callTool({
+      name: 'manage_columns',
+      arguments: { projectId: 'p1', action: 'set_completion', columnId: 'c1', isCompletionColumn: true },
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toBe('COMPLETION_COLUMN_CONFLICT (HTTP 409): Another designation won the race');
+    await close();
+  });
+
   it('rejects an invalid action at the schema level without hitting the backend', async () => {
     const calls = stubBackendFetch(() => ({ status: 200, body: {} }));
     const { client, close } = await connectClient();

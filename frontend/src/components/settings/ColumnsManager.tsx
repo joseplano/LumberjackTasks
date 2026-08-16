@@ -88,6 +88,19 @@ export default function ColumnsManager({ projectId }: { projectId: string }) {
     }
   }
 
+  async function setCompletion(col: KanbanColumn, isCompletionColumn: boolean) {
+    try {
+      await api(`/projects/${projectId}/columns/${col.id}`, {
+        method: 'PATCH',
+        body: { isCompletionColumn },
+      });
+      setError(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update completion column');
+    }
+  }
+
   return (
     <section className="rounded-omarchy border border-border bg-surface p-4">
       <h2 className="mb-3 text-lg font-semibold text-fg">Kanban columns</h2>
@@ -109,6 +122,16 @@ export default function ColumnsManager({ projectId }: { projectId: string }) {
             ) : (
               <>
                 <span className="flex-1 text-fg">{col.name}</span>
+                <label className="flex items-center gap-1 text-xs text-fg-faint">
+                  <input
+                    type="checkbox"
+                    aria-label={`Completion column: ${col.name}`}
+                    checked={col.isCompletionColumn}
+                    onChange={() => setCompletion(col, !col.isCompletionColumn)}
+                    className="rounded border-border text-accent focus:outline-none"
+                  />
+                  Completion
+                </label>
                 <button
                   aria-label="Move up"
                   onClick={() => move(i, -1)}
