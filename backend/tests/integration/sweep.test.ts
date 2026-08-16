@@ -42,7 +42,16 @@ async function setCompletion(columnId: string, isCompletionColumn = true) {
 describe('board sweep (US2): atomicity, concurrency, integrity and the delete race', () => {
   beforeEach(async () => {
     await resetDb();
-    vi.mocked(sweepIfComplete).mockClear();
+    // mockReset() (not mockClear()) so a queued mockRejectedValueOnce from a
+    // prior test can never leak into a later one -- mockClear() only resets
+    // call history, it does not clear a still-queued one-time
+    // implementation. Re-wire the default implementation back to the real
+    // sweepIfComplete afterwards, since mockReset() also clears that.
+    const actual = await vi.importActual<typeof import('../../src/services/sweep')>(
+      '../../src/services/sweep',
+    );
+    vi.mocked(sweepIfComplete).mockReset();
+    vi.mocked(sweepIfComplete).mockImplementation(actual.sweepIfComplete);
     auth = await authHeader(app);
     const p = await request(app).post('/api/v1/projects').set(auth).send({ name: 'Proj' });
     projectId = p.body.id;
