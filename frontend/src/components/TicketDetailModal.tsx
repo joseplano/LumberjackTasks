@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
+import { buildBranchUrl } from '@/lib/branchUrl';
 import { formatMinutes } from '@/lib/format';
 import type { ProjectDetail, TicketDetail } from '@/lib/types';
 import TicketFormModal from './TicketFormModal';
@@ -102,7 +103,11 @@ export default function TicketDetailModal({
     }
   }
 
-  /** Copies the exact effective branch — no trimming, no decoration, no inheritance marker. */
+  /**
+   * Copies the payload the caller derived — the branch URL when one could be built, otherwise
+   * the exact effective branch (no trimming, no decoration, no inheritance marker). This
+   * function has no opinion on which one it is; that decision is made once by the caller.
+   */
   async function copyBranch(branch: string) {
     let done = false;
     try {
@@ -163,50 +168,54 @@ export default function TicketDetailModal({
             )}
             {/* Reported git branch — read-only mirror of what the agent reported (FR-017). */}
             <div className="mt-3 flex items-center gap-2 rounded-omarchy border border-border bg-surface-2 px-3 py-2">
-              {detail.effectiveBranch ? (
-                <>
-                  <svg
-                    role="img"
-                    aria-label="Git branch"
-                    viewBox="0 0 24 24"
-                    className="h-4 w-4 shrink-0 text-fg-muted"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <title>Git branch</title>
-                    <circle cx="6" cy="5" r="2.5" />
-                    <circle cx="6" cy="19" r="2.5" />
-                    <circle cx="18" cy="9" r="2.5" />
-                    <path d="M6 7.5v9" />
-                    <path d="M18 11.5c0 3-3 4.5-6 5" />
-                  </svg>
-                  <span className="min-w-0 flex-1 break-all font-mono text-sm text-fg">
-                    {detail.effectiveBranch}
-                  </span>
-                  {detail.branchSource === 'inherited' && (
-                    <span className="shrink-0 text-xs text-fg-muted">
-                      {inheritedMarker(parentNumber)}
+              {detail.effectiveBranch ? (() => {
+                const branchUrl = buildBranchUrl(project.gitRepoUrl, detail.effectiveBranch!);
+                const copyLabel = branchUrl ? 'Copy branch URL' : 'Copy branch name';
+                return (
+                  <>
+                    <svg
+                      role="img"
+                      aria-label="Git branch"
+                      viewBox="0 0 24 24"
+                      className="h-4 w-4 shrink-0 text-fg-muted"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <title>Git branch</title>
+                      <circle cx="6" cy="5" r="2.5" />
+                      <circle cx="6" cy="19" r="2.5" />
+                      <circle cx="18" cy="9" r="2.5" />
+                      <path d="M6 7.5v9" />
+                      <path d="M18 11.5c0 3-3 4.5-6 5" />
+                    </svg>
+                    <span className="min-w-0 flex-1 break-all font-mono text-sm text-fg">
+                      {detail.effectiveBranch}
                     </span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => copyBranch(detail.effectiveBranch!)}
-                    aria-label="Copy branch name"
-                    title="Copy branch name"
-                    className="shrink-0 rounded-omarchy border border-border bg-surface px-2 py-1 text-xs text-fg hover:border-accent"
-                  >
-                    Copy
-                  </button>
-                  {copied && (
-                    <span role="status" className="shrink-0 text-xs text-fg-muted">
-                      Copiado
-                    </span>
-                  )}
-                </>
-              ) : (
+                    {detail.branchSource === 'inherited' && (
+                      <span className="shrink-0 text-xs text-fg-muted">
+                        {inheritedMarker(parentNumber)}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => copyBranch(branchUrl ?? detail.effectiveBranch!)}
+                      aria-label={copyLabel}
+                      title={copyLabel}
+                      className="shrink-0 rounded-omarchy border border-border bg-surface px-2 py-1 text-xs text-fg hover:border-accent"
+                    >
+                      Copy
+                    </button>
+                    {copied && (
+                      <span role="status" className="shrink-0 text-xs text-fg-muted">
+                        Copiado
+                      </span>
+                    )}
+                  </>
+                );
+              })() : (
                 <span className="text-sm text-fg-muted">Sin rama aún</span>
               )}
             </div>
