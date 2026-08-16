@@ -104,6 +104,30 @@ describe('buildBranchUrl', () => {
     );
   });
 
+  it('does not treat a domain-boundary trap host as gitlab.com (FR-003d regression guard)', () => {
+    expect(buildBranchUrl('https://gitlab.com.evil.example/owner/repo', 'main')).toBe(
+      'https://gitlab.com.evil.example/owner/repo/tree/main'
+    );
+  });
+
+  it('does not treat a domain-boundary trap host as bitbucket.org (FR-003d regression guard)', () => {
+    expect(buildBranchUrl('https://bitbucket.org.evil.example/owner/repo', 'main')).toBe(
+      'https://bitbucket.org.evil.example/owner/repo/tree/main'
+    );
+  });
+
+  it('does not treat a domain-boundary trap host as dev.azure.com (FR-003d regression guard)', () => {
+    expect(buildBranchUrl('https://dev.azure.com.evil.example/owner/repo', 'main')).toBe(
+      'https://dev.azure.com.evil.example/owner/repo/tree/main'
+    );
+  });
+
+  it('does not treat a domain-boundary trap host as visualstudio.com (FR-003d regression guard)', () => {
+    expect(buildBranchUrl('https://visualstudio.com.evil.example/owner/repo', 'main')).toBe(
+      'https://visualstudio.com.evil.example/owner/repo/tree/main'
+    );
+  });
+
   // --- Encoding and boundary vectors (T006) ---
 
   it('keeps literal slashes in the branch path on the github.com shape', () => {
