@@ -98,6 +98,11 @@ describe('buildBranchUrl', () => {
     );
   });
 
+  // Non-discriminating by construction: the GitHub shape and the fallback shape produce
+  // the identical string, so this case passes whether or not the host is classified as
+  // GitHub — it documents the intent (contracts/branchUrl.md, github.com.evil.example row)
+  // while the four sibling guards below (gitlab.com/bitbucket.org/dev.azure.com/
+  // visualstudio.com), whose forges have distinct URL shapes, are what actually enforce it.
   it('does not treat a domain-boundary trap host as github.com', () => {
     expect(buildBranchUrl('https://github.com.evil.example/owner/repo', 'main')).toBe(
       'https://github.com.evil.example/owner/repo/tree/main'
