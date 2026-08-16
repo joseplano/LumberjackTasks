@@ -12,8 +12,8 @@ const project = {
   createdAt: '',
   updatedAt: '',
   columns: [
-    { id: 'c1', projectId: 'p1', name: 'TODO', position: 0 },
-    { id: 'c2', projectId: 'p1', name: 'In development', position: 1 },
+    { id: 'c1', projectId: 'p1', name: 'TODO', position: 0, isCompletionColumn: false },
+    { id: 'c2', projectId: 'p1', name: 'In development', position: 1, isCompletionColumn: false },
   ],
   labels: [],
   phases: [],

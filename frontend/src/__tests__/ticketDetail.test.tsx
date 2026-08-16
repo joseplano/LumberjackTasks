@@ -15,7 +15,7 @@ const project = {
   gitRepoUrl: '',
   createdAt: '',
   updatedAt: '',
-  columns: [{ id: 'c1', projectId: 'p1', name: 'TODO', position: 0 }],
+  columns: [{ id: 'c1', projectId: 'p1', name: 'TODO', position: 0, isCompletionColumn: false }],
   labels: [],
   phases: [],
 };
@@ -35,7 +35,7 @@ const detail = {
   developmentTimeMinutes: 30,
   createdAt: '',
   updatedAt: '',
-  column: { id: 'c1', projectId: 'p1', name: 'TODO', position: 0 },
+  column: { id: 'c1', projectId: 'p1', name: 'TODO', position: 0, isCompletionColumn: false },
   label: null,
   subtickets: [
     {
