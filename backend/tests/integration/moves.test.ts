@@ -345,12 +345,18 @@ describe('ticket movement', () => {
       expect(dbParentBefore!.columnId).toBeNull();
       expect(dbSubBefore!.columnId).toBeNull();
 
-      // Restore only the parent. The subticket stays completed (off-board,
-      // ranked after every real column), so this is a backward move for the
-      // parent relative to the subticket and must be allowed unconditionally.
-      const restore = await move(parent.id, { targetColumnId: cols[0].id });
+      // Restore only the parent, into a later-positioned column (not
+      // cols[0]/position 0): with the pre-fix validateParentMove signature,
+      // a null currentPosition landing at position 0 would coerce
+      // `0 <= null` to `0 <= 0` -> true and return early regardless of the
+      // RANK_OFF_BOARD logic this test exists to cover. Using cols[1]
+      // (position > 0) actually exercises the null-currentPosition path.
+      // The subticket stays completed (off-board, ranked after every real
+      // column), so this is a backward move for the parent relative to the
+      // subticket and must be allowed unconditionally.
+      const restore = await move(parent.id, { targetColumnId: cols[1].id });
       expect(restore.status).toBe(200);
-      expect(restore.body.columnId).toBe(cols[0].id);
+      expect(restore.body.columnId).toBe(cols[1].id);
 
       const dbSubAfter = await prisma.ticket.findUnique({ where: { id: sub.id } });
       expect(dbSubAfter!.columnId).toBeNull(); // subticket is untouched, still completed

@@ -190,4 +190,72 @@ describe('reports', () => {
     expect(afterActive.body).toEqual(beforeActive.body);
     expect(afterConsumption.body).toEqual(beforeConsumption.body);
   });
+
+  // T052 (FR-020, I-2): pins the controller's deliberate ruling that
+  // transitionsReport() DOES legitimately change across a sweep -- FR-020
+  // unconditionally adds one TicketStatusHistory row per swept ticket, and
+  // this report counts history rows with no filtering. This must NOT later
+  // be "fixed" by filtering toColumnName === 'Completed' out of the report:
+  // that string is display text and can collide with a user-chosen column
+  // name of the same text (see the comment in backend/src/services/backlog.ts).
+  it('T052: a sweep increases mostChanges by exactly 1 per already-parked swept ticket, and leaves mostTokensInProcess exactly unchanged', async () => {
+    const p = await makeProject('Pinned');
+    const cols = (await request(app).get(`/api/v1/projects/${p.id}/columns`).set(auth)).body as {
+      id: string;
+    }[];
+    await request(app)
+      .patch(`/api/v1/projects/${p.id}/columns/${cols[4].id}`)
+      .set(auth)
+      .send({ isCompletionColumn: true })
+      .expect(200);
+
+    const t1 = await makeTicket(p.id, { name: 'T1', complexity: 1 });
+    const t2 = await makeTicket(p.id, { name: 'T2', complexity: 1 });
+    const t3 = await makeTicket(p.id, { name: 'T3', complexity: 1 });
+
+    // Park t1 and t2 in the completion column ahead of time (t3 stays
+    // elsewhere, so neither move sweeps). Each carries a token delta so
+    // mostTokensInProcess has a real, non-zero baseline to hold steady.
+    await request(app)
+      .post(`/api/v1/tickets/${t1.id}/move`)
+      .set(auth)
+      .send({ targetColumnId: cols[4].id, tokensDelta: 40, llmName: 'claude' })
+      .expect(200);
+    await request(app)
+      .post(`/api/v1/tickets/${t2.id}/move`)
+      .set(auth)
+      .send({ targetColumnId: cols[4].id, tokensDelta: 20, llmName: 'claude' })
+      .expect(200);
+
+    const before = (await request(app).get('/api/v1/reports/transitions').set(auth)).body as {
+      mostChanges: { ticketId: string; changes: number }[];
+      mostTokensInProcess: { ticketId: string; tokens: number }[];
+    };
+    const changesBefore = new Map(before.mostChanges.map((r) => [r.ticketId, r.changes]));
+    const tokensBefore = new Map(before.mostTokensInProcess.map((r) => [r.ticketId, r.tokens]));
+
+    // Moving t3 in empties every other column, so this move sweeps t1, t2
+    // and t3 together. t1 and t2 make no move of their own this time, so
+    // the only new history row for either of them is the sweep's own exit
+    // row (FR-020) -- isolating exactly the sweep's contribution.
+    const sweepMove = await request(app)
+      .post(`/api/v1/tickets/${t3.id}/move`)
+      .set(auth)
+      .send({ targetColumnId: cols[4].id })
+      .expect(200);
+    expect(sweepMove.body.sweep).not.toBeNull();
+    expect(sweepMove.body.sweep.ticketIds.sort()).toEqual([t1.id, t2.id, t3.id].sort());
+
+    const after = (await request(app).get('/api/v1/reports/transitions').set(auth)).body as {
+      mostChanges: { ticketId: string; changes: number }[];
+      mostTokensInProcess: { ticketId: string; tokens: number }[];
+    };
+    const changesAfter = new Map(after.mostChanges.map((r) => [r.ticketId, r.changes]));
+    const tokensAfter = new Map(after.mostTokensInProcess.map((r) => [r.ticketId, r.tokens]));
+
+    for (const id of [t1.id, t2.id]) {
+      expect(changesAfter.get(id)).toBe((changesBefore.get(id) ?? 0) + 1);
+      expect(tokensAfter.get(id)).toBe(tokensBefore.get(id));
+    }
+  });
 });

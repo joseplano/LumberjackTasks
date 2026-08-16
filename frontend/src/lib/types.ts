@@ -54,7 +54,7 @@ export interface Ticket {
   createdAt: string;
   updatedAt: string;
   label?: Label | null;
-  column?: KanbanColumn;
+  column?: KanbanColumn | null;
 }
 
 export interface StatusChange {

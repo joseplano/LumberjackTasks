@@ -58,8 +58,8 @@ export async function sweepIfComplete(
   // reintroduce exactly that race, so this must stay a single RETURNING
   // statement.
   const rows = await tx.$queryRaw<{ id: string }[]>`
-    UPDATE "tickets" SET "columnId" = NULL
-    WHERE "columnId" = ${completionColumn.id}
+    UPDATE "tickets" SET "columnId" = NULL, "updatedAt" = NOW()
+    WHERE "columnId" = ${completionColumn.id} AND "projectId" = ${projectId}
     RETURNING "id"
   `;
   if (rows.length === 0) return null;
