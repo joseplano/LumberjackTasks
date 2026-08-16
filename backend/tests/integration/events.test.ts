@@ -121,4 +121,64 @@ describe('GET /api/v1/events', () => {
     const created = events.find((e) => e.type === 'ticket.created');
     expect(created?.projectId).toBeTruthy();
   });
+
+  // T030 (FR-022): exactly one project-scoped board.swept event per sweep,
+  // not one per swept ticket.
+  it('emits exactly one board.swept event per sweep, not one per ticket', async () => {
+    const auth = await authHeader(app);
+    const proj = await request(app)
+      .post('/api/v1/projects')
+      .set(auth)
+      .send({ name: 'SweepEvents' })
+      .expect(201);
+    const projectId = proj.body.id;
+    const cols = (
+      await request(app).get(`/api/v1/projects/${projectId}/columns`).set(auth)
+    ).body as { id: string; name: string }[];
+    await request(app)
+      .patch(`/api/v1/projects/${projectId}/columns/${cols[4].id}`)
+      .set(auth)
+      .send({ isCompletionColumn: true })
+      .expect(200);
+
+    const mkTicket = async (name: string) =>
+      (
+        await request(app)
+          .post(`/api/v1/projects/${projectId}/tickets`)
+          .set(auth)
+          .send({ name, complexity: 1 })
+          .expect(201)
+      ).body as { id: string };
+    const t1 = await mkTicket('T1');
+    const t2 = await mkTicket('T2');
+    const t3 = await mkTicket('T3');
+
+    const events: AppEvent[] = [];
+    const unsubscribe = subscribeEvents((e) => events.push(e));
+    try {
+      await request(app)
+        .post(`/api/v1/tickets/${t1.id}/move`)
+        .set(auth)
+        .send({ targetColumnId: cols[4].id })
+        .expect(200);
+      await request(app)
+        .post(`/api/v1/tickets/${t2.id}/move`)
+        .set(auth)
+        .send({ targetColumnId: cols[4].id })
+        .expect(200);
+      const last = await request(app)
+        .post(`/api/v1/tickets/${t3.id}/move`)
+        .set(auth)
+        .send({ targetColumnId: cols[4].id })
+        .expect(200);
+      expect(last.body.sweep).not.toBeNull();
+      expect(last.body.sweep.ticketCount).toBe(3);
+    } finally {
+      unsubscribe();
+    }
+
+    const sweptEvents = events.filter((e) => e.type === 'board.swept');
+    expect(sweptEvents).toHaveLength(1);
+    expect(sweptEvents[0].projectId).toBe(projectId);
+  });
 });

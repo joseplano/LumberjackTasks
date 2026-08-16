@@ -97,7 +97,7 @@ export function registerTicketTools(server: McpServer) {
     {
       title: 'Move ticket',
       description:
-        'Move a ticket to another column, optionally registering token/time consumption for the transition. Parent tickets can only move forward when every subticket is in the target column or later.',
+        "Move a ticket to another column, optionally registering token/time consumption for the transition. Parent tickets can only move forward when every subticket is in the target column or later. Moving the last ticket on the board into the project's completion column causes the backend to sweep every ticket off the board. When that happens the response contains a non-null `sweep` summary and the returned ticket's columnId is null -- the ticket is completed, not lost, and remains in the backlog. To restore a completed ticket, call this same tool with a targetColumnId to place it back on the board.",
       inputSchema: { ticketId: z.string(), ...moveFields },
     },
     async ({ ticketId, ...body }) =>
@@ -153,7 +153,7 @@ export function registerTicketTools(server: McpServer) {
     {
       title: 'Move subticket',
       description:
-        'Move a subticket to another column, optionally registering token/time consumption. Subtickets move freely.',
+        "Move a subticket to another column, optionally registering token/time consumption. Subtickets move freely. Moving the last ticket on the board into the project's completion column causes the backend to sweep every ticket off the board. When that happens the response contains a non-null `sweep` summary and the returned subticket's columnId is null -- the ticket is completed, not lost, and remains in the backlog. To restore a completed subticket, call this same tool with a targetColumnId to place it back on the board.",
       inputSchema: { subticketId: z.string(), ...moveFields },
     },
     async ({ subticketId, ...body }) =>
