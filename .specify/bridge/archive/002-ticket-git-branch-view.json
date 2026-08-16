@@ -1,0 +1,65 @@
+{
+  "bridgeVersion": "3.1.0",
+  "phase": "complete",
+  "result": "FEATURE_IMPLEMENTED_AND_VERIFIED",
+  "originalIdea": "cada ticket deberia tener la rama de git donde se va a trabajar de manera visual cuando se abre el ticket",
+  "classification": "architectural",
+  "approvedDesignPath": ".specify/bridge/approved-design.md",
+  "activeFeatureDirectory": "specs/002-ticket-git-branch-view",
+  "baseBranch": "main",
+  "canonicalBranch": "002-ticket-git-branch-view",
+  "currentBranch": "002-ticket-git-branch-view",
+  "headAtCompletion": "18ff05a",
+  "committed": true,
+  "commit": {
+    "sha": "18ff05a",
+    "subject": "feat(tickets): show the git branch the agent is working on",
+    "excluded": [".claude/agents/", ".claude/skills/", "claude-no-restrictions.bat", ".specify/bridge/sdd-feature-state.json"],
+    "pushed": true,
+    "pushedTo": "origin/002-ticket-git-branch-view (github.com/joseplano/LumberjackTasks), remote sha matches local 18ff05a",
+    "merged": false,
+    "prOpened": false
+  },
+  "verification": {
+    "backend": "282/282 (run twice)",
+    "mcp": "80/80",
+    "frontend": "131/131",
+    "plugin": "21/21 (includes the FR-023/FR-024 coverage test added by the controller)",
+    "builds": "backend, mcp, frontend all exit 0",
+    "tasks": "58/58",
+    "postAnalyze": "0 CRITICAL, 0 HIGH, 0 MEDIUM, 2 LOW",
+    "behavioralConsistency": "BEHAVIORAL_CONSISTENCY_PASS",
+    "technologyReadiness": "TECHNOLOGY_READINESS_PASS",
+    "readiness": "102/102"
+  },
+  "controllerInterventions": [
+    "Closed CRITICAL constitution finding C1: added a mutation-checked test in plugin/tests/plugin-config.test.mjs covering FR-023 (agent reads the branch with git rev-parse) and FR-024 (detached HEAD reports nothing). The orchestrator had reported the plugin suite green while the changed file had no covering assertion."
+  ],
+  "migrationApplied": {
+    "database": "lumberjack_tasks (dev, 127.0.0.1:5434)",
+    "migrateDeploy": "applied 20260816_ticket_git_branch; 4 migrations total, all up to date",
+    "driftCheck": "npx prisma migrate diff --from-config-datasource --to-schema ./prisma/schema.prisma --exit-code -> 'No difference detected', exit 0",
+    "gitBranchColumn": "text, nullable",
+    "partialIndex": "kanban_columns_projectId_completion_key intact, predicate WHERE (\"isCompletionColumn\" = true) verified directly via pg_indexes because migrate diff is blind to filtered unique indexes"
+  },
+  "openItems": [
+    "Pre-existing backend test flakiness under concurrent runs against one lumberjack_tasks_test database (TRUNCATE ... users RESTART IDENTITY CASCADE in backend/tests/helpers.ts). Unrelated to this feature; deserves its own ticket.",
+    "tests/globalSetup.ts runs `migrate deploy` but not `prisma generate`, which will bite CI.",
+    "README.md test badge says 355 vs an actual 504; already stale before this feature."
+  ],
+  "notVerifiableHeadlessly": [
+    "visual prominence of the branch block",
+    "real browser hover tooltip on the card chip",
+    "actual OS clipboard receipt",
+    "a full autonomous ticket-sync session"
+  ],
+  "board": {
+    "projectId": "a45e04c0-7a5e-42bf-b2af-a27a9793879e",
+    "phaseId": "afec1004-b7b7-4bdd-b52f-c0624b28d96c",
+    "parentTicket": 1,
+    "subtickets": [2, 3, 4, 5, 6, 7, 8],
+    "column": "Committed",
+    "registered": { "tokens": 456719, "llmName": "claude-opus-5", "minutes": 263 }
+  },
+  "noPushMergePublishOrPR": true
+}

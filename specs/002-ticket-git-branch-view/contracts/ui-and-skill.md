@@ -35,6 +35,14 @@ from the primary ticket response and is therefore **never** withheld because of 
 
 **Copy control**:
 
+> **Superseded in part by feature `003-copy-branch-url`.** The payload clause below is the
+> behaviour as shipped by this feature. Feature 003 narrows it: the control places the branch
+> **URL** on the clipboard whenever one can be derived from the project's configured repository
+> URL, and the exact `effectiveBranch` text when it cannot — which is every case for a project
+> with no repository URL configured. The clipboard mechanism, the fallback, the confirmation and
+> the text alternative below are unchanged by 003. See
+> `specs/003-copy-branch-url/spec.md` §"Relationship to feature 002".
+
 - Places the exact `effectiveBranch` text on the clipboard — no trimming, no decoration, no
   inheritance marker.
 - Primary path `navigator.clipboard.writeText`; fallback hidden-textarea +
