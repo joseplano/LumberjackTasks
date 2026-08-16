@@ -94,7 +94,7 @@ function mockLoadCalls(
       if (result) return result;
     }
     if (path === '/projects/p1') return Promise.resolve(project);
-    if (path === '/projects/p1/tickets') return Promise.resolve(tickets);
+    if (path === '/projects/p1/tickets?placement=board') return Promise.resolve(tickets);
     if (path === '/projects/p1/metrics') return Promise.resolve(metrics);
     return Promise.reject(new Error(`Unexpected path ${path}`));
   });
@@ -115,7 +115,9 @@ describe('ProjectBoardPage', () => {
     expect(screen.getByText('500')).toBeInTheDocument();
     expect(screen.getByText('1h 30m')).toBeInTheDocument();
     expect(api).toHaveBeenCalledWith('/projects/p1');
-    expect(api).toHaveBeenCalledWith('/projects/p1/tickets');
+    // T047 (FR-019a): the board fetches with placement=board so completed
+    // tickets never appear on it, in any form.
+    expect(api).toHaveBeenCalledWith('/projects/p1/tickets?placement=board');
     expect(api).toHaveBeenCalledWith('/projects/p1/metrics');
   });
 
@@ -184,5 +186,51 @@ describe('ProjectBoardPage', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '×' }));
     expect(screen.queryByText('Parent move blocked')).not.toBeInTheDocument();
+  });
+
+  // T048 (research.md R8): a sweep changes every ticket on the board at
+  // once, which moveTicketLocally cannot express. The board must discard
+  // its optimistic local state and refetch rather than leave the moved
+  // ticket showing as if it were still on the board.
+  it('discards optimistic local state and refetches when a move response carries a sweep', async () => {
+    let ticketsCall = 0;
+    vi.mocked(api).mockImplementation((path: string) => {
+      if (path === '/tickets/t1/move') {
+        return Promise.resolve({
+          id: 't1',
+          columnId: null,
+          sweep: {
+            completionColumnId: 'c2',
+            completionColumnName: 'Done',
+            ticketCount: 2,
+            ticketIds: ['t1', 't2'],
+          },
+        });
+      }
+      if (path === '/projects/p1') return Promise.resolve(project);
+      if (path === '/projects/p1/tickets?placement=board') {
+        ticketsCall += 1;
+        // First call is the initial load (both tickets on board); the
+        // refetch after the sweep-triggering move returns an empty board.
+        return Promise.resolve(ticketsCall === 1 ? tickets : []);
+      }
+      if (path === '/projects/p1/metrics') return Promise.resolve(metrics);
+      return Promise.reject(new Error(`Unexpected path ${path}`));
+    });
+
+    render(<ProjectBoardPage />);
+    await screen.findByTestId('ticket-t1');
+
+    await act(async () => {
+      capturedOnMove!('t1', 'c2');
+    });
+
+    // The move response carried a non-null `sweep`. The optimistic patch
+    // (which would have shown t1 sitting in c2, still on the board) is fully
+    // discarded by the refetch -- t1 is not shown in the completion column,
+    // it is simply gone, along with t2 (also swept, per the response).
+    expect(screen.queryByTestId('ticket-t1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('ticket-t2')).not.toBeInTheDocument();
+    expect(ticketsCall).toBe(2);
   });
 });

@@ -19,7 +19,10 @@ const project = {
   gitRepoUrl: '',
   createdAt: '',
   updatedAt: '',
-  columns: [],
+  columns: [
+    { id: 'c1', projectId: 'p1', name: 'TODO', position: 0, isCompletionColumn: false },
+    { id: 'c2', projectId: 'p1', name: 'Done', position: 1, isCompletionColumn: true },
+  ],
   labels: [],
   phases: [],
 };
@@ -37,6 +40,7 @@ const backlog = {
           complexity: 5,
           parentTicketId: null,
           status: 'In development',
+          completed: false,
           label: 'feature',
           subtasks: [
             {
@@ -47,6 +51,7 @@ const backlog = {
               complexity: 2,
               parentTicketId: 't1',
               status: 'Done',
+              completed: false,
               label: null,
               subtasks: [],
             },
@@ -64,7 +69,8 @@ const backlog = {
           description: '',
           complexity: 3,
           parentTicketId: null,
-          status: 'Done',
+          status: 'Completed',
+          completed: true,
           label: null,
           subtasks: [],
         },
@@ -120,6 +126,23 @@ describe('BacklogPage', () => {
     const noPhaseHeader = screen.getByRole('button', { name: /No phase/ });
     expect(noPhaseHeader).toHaveTextContent('(1)');
     expect(screen.getByText('Setup CI')).toBeInTheDocument();
+  });
+
+  it('renders a completed (swept) ticket distinguishably, keyed off the completed flag (T046)', async () => {
+    render(<BacklogPage />);
+    await screen.findByText('Setup CI');
+
+    // Setup CI is completed: true with status 'Completed'. It must render
+    // wrapped in a distinguishing marker (not plain text like the on-board
+    // rows), proving the page branches on `completed` rather than just
+    // printing `status`.
+    const completedLabel = screen.getByText('Completed');
+    expect(completedLabel.tagName).not.toBe('TD');
+
+    // An on-board ticket with the same-looking status text is rendered as
+    // plain text, not wrapped in the completed marker.
+    const onBoardLabel = screen.getByText('In development');
+    expect(onBoardLabel.tagName).toBe('TD');
   });
 
   it('renders the "No phase" group last', async () => {
@@ -212,6 +235,80 @@ describe('BacklogPage', () => {
     expect(api).toHaveBeenLastCalledWith(
       '/projects/p1/backlog?sortBy=id&order=asc&page=2&pageSize=50',
     );
+  });
+
+  it('T055: shows a restore affordance only for a completed ticket, and restoring reuses the move endpoint', async () => {
+    render(<BacklogPage />);
+    await screen.findByText('Setup CI');
+
+    // Only the completed ticket (Setup CI) gets a Restore affordance; the
+    // on-board ticket (Login endpoint) and its subtask do not.
+    const restoreButtons = screen.getAllByRole('button', { name: /restore/i });
+    expect(restoreButtons).toHaveLength(1);
+
+    await userEvent.click(restoreButtons[0]);
+
+    // Reuses the existing move endpoint -- no new endpoint -- targeting the
+    // project's first column.
+    expect(api).toHaveBeenCalledWith('/tickets/t9/move', {
+      method: 'POST',
+      body: { targetColumnId: 'c1' },
+    });
+
+    // Clicking Restore must not also open the ticket detail modal.
+    expect(api).not.toHaveBeenCalledWith('/tickets/t9');
+  });
+
+  it('T055a (FR-023a): restores into the first column that is NOT the completion column', async () => {
+    // The completion column sits first by position here, so choosing "the first
+    // column" outright would send the ticket straight back into it. On an
+    // otherwise empty board that re-satisfies the sweep condition immediately
+    // and bounces the ticket off the board again -- the operator clicks Restore
+    // and nothing visibly happens. This test fails under that naive choice.
+    const completionColumnFirst = {
+      ...project,
+      columns: [
+        { id: 'c2', projectId: 'p1', name: 'Done', position: 0, isCompletionColumn: true },
+        { id: 'c1', projectId: 'p1', name: 'TODO', position: 1, isCompletionColumn: false },
+      ],
+    };
+    vi.mocked(api).mockImplementation((path: string) => {
+      if (path.startsWith('/projects/p1/backlog')) return Promise.resolve(backlog);
+      if (path.startsWith('/tickets/')) return Promise.resolve(ticketDetail);
+      return Promise.resolve(completionColumnFirst);
+    });
+
+    render(<BacklogPage />);
+    await screen.findByText('Setup CI');
+    await userEvent.click(screen.getByRole('button', { name: /restore/i }));
+
+    expect(api).toHaveBeenCalledWith('/tickets/t9/move', {
+      method: 'POST',
+      body: { targetColumnId: 'c1' },
+    });
+  });
+
+  it('T055a (FR-023a): falls back to the completion column when it is the only column', async () => {
+    // Nothing else to pick. The immediate re-sweep is the documented outcome
+    // for a single-column project, not a reason to disable the affordance.
+    const onlyCompletionColumn = {
+      ...project,
+      columns: [{ id: 'c2', projectId: 'p1', name: 'Done', position: 0, isCompletionColumn: true }],
+    };
+    vi.mocked(api).mockImplementation((path: string) => {
+      if (path.startsWith('/projects/p1/backlog')) return Promise.resolve(backlog);
+      if (path.startsWith('/tickets/')) return Promise.resolve(ticketDetail);
+      return Promise.resolve(onlyCompletionColumn);
+    });
+
+    render(<BacklogPage />);
+    await screen.findByText('Setup CI');
+    await userEvent.click(screen.getByRole('button', { name: /restore/i }));
+
+    expect(api).toHaveBeenCalledWith('/tickets/t9/move', {
+      method: 'POST',
+      body: { targetColumnId: 'c2' },
+    });
   });
 
   it('collapses a group to hide its tickets, and restores them when expanded again', async () => {

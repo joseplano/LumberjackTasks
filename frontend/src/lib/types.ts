@@ -13,6 +13,7 @@ export interface KanbanColumn {
   projectId: string;
   name: string;
   position: number;
+  isCompletionColumn: boolean;
 }
 
 export interface Label {
@@ -43,7 +44,7 @@ export interface Ticket {
   parentTicketId: string | null;
   name: string;
   description: string;
-  columnId: string;
+  columnId: string | null;
   complexity: number;
   labelId: string | null;
   phaseId: string | null;
@@ -53,7 +54,7 @@ export interface Ticket {
   createdAt: string;
   updatedAt: string;
   label?: Label | null;
-  column?: KanbanColumn;
+  column?: KanbanColumn | null;
 }
 
 export interface StatusChange {
@@ -80,6 +81,10 @@ export interface BacklogItem {
   complexity: number;
   parentTicketId: string | null;
   status: string;
+  // Authoritative, machine-readable flag for a swept (off-board) ticket.
+  // Branch on this, not on `status` -- `status` is display text and can
+  // collide with a user-chosen column name of the same text.
+  completed: boolean;
   label: string | null;
   subtasks: BacklogItem[];
 }

@@ -22,8 +22,8 @@ import SettingsPage from '@/app/(app)/settings/page';
 import { api, ApiError } from '@/lib/api';
 
 const columns = [
-  { id: 'c1', projectId: 'p1', name: 'TODO', position: 0 },
-  { id: 'c2', projectId: 'p1', name: 'Done', position: 1 },
+  { id: 'c1', projectId: 'p1', name: 'TODO', position: 0, isCompletionColumn: false },
+  { id: 'c2', projectId: 'p1', name: 'Done', position: 1, isCompletionColumn: false },
 ];
 
 describe('ColumnsManager', () => {
@@ -109,6 +109,77 @@ describe('ColumnsManager', () => {
     expect(api).toHaveBeenLastCalledWith('/projects/p1/columns/c1', { method: 'DELETE' });
     await waitFor(() => expect(screen.queryByText('TODO')).not.toBeInTheDocument());
     expect(screen.queryByText(/move its tickets to/i)).not.toBeInTheDocument();
+  });
+
+  it('designates a column as the completion column via PATCH', async () => {
+    render(<ColumnsManager projectId="p1" />);
+    await screen.findByText('TODO');
+    vi.mocked(api).mockResolvedValueOnce({ id: 'c1', isCompletionColumn: true });
+    await userEvent.click(screen.getByRole('checkbox', { name: /completion column: todo/i }));
+    expect(api).toHaveBeenCalledWith('/projects/p1/columns/c1', {
+      method: 'PATCH',
+      body: { isCompletionColumn: true },
+    });
+  });
+
+  it('clears the completion column via PATCH with isCompletionColumn: false', async () => {
+    vi.mocked(api).mockResolvedValueOnce([
+      { id: 'c1', projectId: 'p1', name: 'TODO', position: 0, isCompletionColumn: true },
+      { id: 'c2', projectId: 'p1', name: 'Done', position: 1, isCompletionColumn: false },
+    ]);
+    render(<ColumnsManager projectId="p1" />);
+    await screen.findByText('TODO');
+    vi.mocked(api).mockResolvedValueOnce({ id: 'c1', isCompletionColumn: false });
+    await userEvent.click(screen.getByRole('checkbox', { name: /completion column: todo/i }));
+    expect(api).toHaveBeenCalledWith('/projects/p1/columns/c1', {
+      method: 'PATCH',
+      body: { isCompletionColumn: false },
+    });
+  });
+
+  it('marks at most one column as the completion column after designating a second one', async () => {
+    vi.mocked(api).mockResolvedValueOnce([
+      { id: 'c1', projectId: 'p1', name: 'TODO', position: 0, isCompletionColumn: true },
+      { id: 'c2', projectId: 'p1', name: 'Done', position: 1, isCompletionColumn: false },
+    ]);
+    render(<ColumnsManager projectId="p1" />);
+    await screen.findByText('TODO');
+    expect(screen.getByRole('checkbox', { name: /completion column: todo/i })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /completion column: done/i })).not.toBeChecked();
+
+    // PATCH response, then the re-fetched list after load() — backend already cleared the old one atomically.
+    vi.mocked(api).mockResolvedValueOnce({ id: 'c2', isCompletionColumn: true });
+    vi.mocked(api).mockResolvedValueOnce([
+      { id: 'c1', projectId: 'p1', name: 'TODO', position: 0, isCompletionColumn: false },
+      { id: 'c2', projectId: 'p1', name: 'Done', position: 1, isCompletionColumn: true },
+    ]);
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /completion column: done/i }));
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('checkbox', { checked: true })).toHaveLength(1);
+    });
+    expect(screen.getByRole('checkbox', { name: /completion column: done/i })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /completion column: todo/i })).not.toBeChecked();
+    // Only the designating PATCH was issued — no client-side clearing request for the old column.
+    expect(api).toHaveBeenCalledWith('/projects/p1/columns/c2', {
+      method: 'PATCH',
+      body: { isCompletionColumn: true },
+    });
+    expect(api).not.toHaveBeenCalledWith(
+      '/projects/p1/columns/c1',
+      expect.objectContaining({ method: 'PATCH', body: { isCompletionColumn: false } }),
+    );
+  });
+
+  it('surfaces a 409 COMPLETION_COLUMN_CONFLICT error', async () => {
+    render(<ColumnsManager projectId="p1" />);
+    await screen.findByText('TODO');
+    vi.mocked(api).mockRejectedValueOnce(
+      new ApiError(409, 'COMPLETION_COLUMN_CONFLICT', 'Another column was just designated'),
+    );
+    await userEvent.click(screen.getByRole('checkbox', { name: /completion column: todo/i }));
+    expect(await screen.findByText(/another column was just designated/i)).toBeInTheDocument();
   });
 });
 

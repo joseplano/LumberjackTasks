@@ -26,7 +26,9 @@ export default function ProjectBoardPage() {
     try {
       const [p, t, m] = await Promise.all([
         api<ProjectDetail>(`/projects/${id}`),
-        api<Ticket[]>(`/projects/${id}/tickets`),
+        // placement=board (FR-019a): completed tickets must never appear on
+        // the board, in any form.
+        api<Ticket[]>(`/projects/${id}/tickets?placement=board`),
         api<ProjectMetrics>(`/projects/${id}/metrics`),
       ]);
       setProject(p);
@@ -50,6 +52,13 @@ export default function ProjectBoardPage() {
     setTickets((current) => moveTicketLocally(current, ticketId, targetColumnId));
     try {
       await api(`/tickets/${ticketId}/move`, { method: 'POST', body: { targetColumnId } });
+      // Always refetch after a successful move (with placement=board, so
+      // swept tickets simply drop out of the response). When the response
+      // carries a non-null `sweep`, every ticket on the board may have
+      // changed at once -- something moveTicketLocally cannot express and
+      // must not be taught to express (research.md R8) -- so this refetch is
+      // what discards the optimistic single-ticket patch above and replaces
+      // it with the authoritative board state, rather than patching further.
       load();
     } catch (err) {
       // Revert only this ticket so concurrent in-flight moves are not wiped out.

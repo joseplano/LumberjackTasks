@@ -26,13 +26,19 @@ export function validateTicketData(data: {
   }
 }
 
+// FR-011a: "completed / off the board" ranks strictly after every column, so
+// a null position (a completed ticket or subticket) is always treated as
+// greater than any real column position.
+const RANK_OFF_BOARD = Number.POSITIVE_INFINITY;
+
 export function validateParentMove(
   targetPosition: number,
-  currentPosition: number,
-  subticketPositions: number[],
+  currentPosition: number | null,
+  subticketPositions: (number | null)[],
 ): void {
-  if (targetPosition <= currentPosition) return; // moving backwards or staying is always allowed
-  const behind = subticketPositions.filter((p) => p < targetPosition);
+  const currentRank = currentPosition ?? RANK_OFF_BOARD;
+  if (targetPosition <= currentRank) return; // moving backwards or staying is always allowed
+  const behind = subticketPositions.filter((p) => (p ?? RANK_OFF_BOARD) < targetPosition);
   if (behind.length > 0) {
     throw new ApiError(
       409,

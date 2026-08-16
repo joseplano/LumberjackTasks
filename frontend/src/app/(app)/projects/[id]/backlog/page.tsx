@@ -15,10 +15,14 @@ function TicketRow({
   item,
   depth,
   onOpen,
+  restoreColumnId,
+  onRestore,
 }: {
   item: BacklogItem;
   depth: number;
   onOpen: (id: string) => void;
+  restoreColumnId: string | undefined;
+  onRestore: (id: string, targetColumnId: string) => void;
 }) {
   return (
     <tr onClick={() => onOpen(item.id)} className="cursor-pointer border-b border-border hover:bg-surface-2">
@@ -27,7 +31,26 @@ function TicketRow({
       </td>
       <td className="p-2">{item.name}</td>
       <td className="p-2 text-fg-muted">{item.description}</td>
-      <td className="p-2">{item.status}</td>
+      <td className="p-2">
+        {item.completed ? (
+          <span className="rounded-omarchy border border-border bg-surface-2 px-1.5 py-0.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
+            {item.status}
+          </span>
+        ) : (
+          item.status
+        )}
+        {item.completed && restoreColumnId && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onRestore(item.id, restoreColumnId);
+            }}
+            className="ml-2 text-accent hover:underline"
+          >
+            Restore
+          </button>
+        )}
+      </td>
       <td className="p-2">{item.label ?? '—'}</td>
     </tr>
   );
@@ -75,6 +98,35 @@ export default function BacklogPage() {
   }, [load]);
 
   useLiveEvents(id, load);
+
+  // T055 (FR-023), T055a (FR-023a): reuses the existing move endpoint -- no new
+  // endpoint -- restoring into the project's first (lowest-position) column that
+  // is NOT the completion column. Restoring into the completion column of an
+  // otherwise empty board re-satisfies the sweep condition immediately and
+  // bounces the ticket straight back off the board, so it must never be the
+  // default destination. If the completion column is the project's only column
+  // there is nothing else to pick, and that immediate re-sweep is the accepted
+  // outcome (spec.md, Edge Cases: "Restoring a completed ticket directly into
+  // the completion column").
+  const restoreColumnId = (() => {
+    if (!project?.columns.length) return undefined;
+    const byPosition = [...project.columns].sort((a, b) => a.position - b.position);
+    const ordinary = byPosition.find((c) => !c.isCompletionColumn);
+    return (ordinary ?? byPosition[0]).id;
+  })();
+
+  async function restoreTicket(ticketId: string, targetColumnId: string) {
+    try {
+      await api(`/tickets/${ticketId}/move`, {
+        method: 'POST',
+        body: { targetColumnId },
+      });
+      setError(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to restore ticket');
+    }
+  }
 
   function toggleSort(key: SortKey) {
     if (sortBy === key) {
@@ -133,9 +185,23 @@ export default function BacklogPage() {
               </tr>
               {!collapsed &&
                 group.tickets.flatMap((t) => [
-                  <TicketRow key={t.id} item={t} depth={0} onOpen={setOpenTicketId} />,
+                  <TicketRow
+                    key={t.id}
+                    item={t}
+                    depth={0}
+                    onOpen={setOpenTicketId}
+                    restoreColumnId={restoreColumnId}
+                    onRestore={restoreTicket}
+                  />,
                   ...t.subtasks.map((s) => (
-                    <TicketRow key={s.id} item={s} depth={1} onOpen={setOpenTicketId} />
+                    <TicketRow
+                      key={s.id}
+                      item={s}
+                      depth={1}
+                      onOpen={setOpenTicketId}
+                      restoreColumnId={restoreColumnId}
+                      onRestore={restoreTicket}
+                    />
                   )),
                 ])}
             </tbody>

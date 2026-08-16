@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../src/app';
-import { resetDb, authHeader } from '../helpers';
+import { resetDb, authHeader, prisma } from '../helpers';
 
 const app = createApp();
 let auth: { Authorization: string };
@@ -27,6 +27,23 @@ describe('tickets', () => {
     expect(b.body.number).toBe(2);
     const cols = await request(app).get(`/api/v1/projects/${projectId}/columns`).set(auth);
     expect(a.body.columnId).toBe(cols.body[0].id);
+  });
+
+  it('never leaves a ticket with a null columnId on ordinary create or update paths', async () => {
+    // data-model.md central invariant: no ordinary create or update path can
+    // leave a ticket with a null columnId. The sweep (a later phase) is the
+    // only thing allowed to null it out.
+    const created = await createTicket({ name: 'Invariant', complexity: 3 });
+    expect(created.status).toBe(201);
+    expect(created.body.columnId).not.toBeNull();
+    expect(typeof created.body.columnId).toBe('string');
+
+    const updateAttempt = await request(app)
+      .patch(`/api/v1/tickets/${created.body.id}`)
+      .set(auth)
+      .send({ columnId: null });
+    expect(updateAttempt.status).toBe(400);
+    expect(updateAttempt.body.error.code).toBe('VALIDATION');
   });
 
   it('rejects invalid complexity', async () => {
@@ -319,5 +336,136 @@ describe('tickets', () => {
 
     const cleared = await request(app).patch(`/api/v1/tickets/${ticket.id}`).set(auth).send({ phaseId: null });
     expect(cleared.body.phaseId).toBeNull();
+  });
+
+  // T040 (FR-019a, research.md R4): the `placement` filter on
+  // GET /projects/:id/tickets.
+  describe('placement filter (T040)', () => {
+    it('returns everything when placement is omitted, exactly as before', async () => {
+      const p = await createTicket({ name: 'P', complexity: 1 });
+      await createTicket({ name: 'S', complexity: 1, parentTicketId: p.body.id });
+      const res = await request(app).get(`/api/v1/projects/${projectId}/tickets`).set(auth);
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveLength(2);
+    });
+
+    it('placement=all returns exactly what omitting it returns', async () => {
+      const p = await createTicket({ name: 'P', complexity: 1 });
+      await createTicket({ name: 'S', complexity: 1, parentTicketId: p.body.id });
+      const omitted = await request(app).get(`/api/v1/projects/${projectId}/tickets`).set(auth);
+      const all = await request(app)
+        .get(`/api/v1/projects/${projectId}/tickets?placement=all`)
+        .set(auth);
+      expect(all.status).toBe(200);
+      expect(all.body).toEqual(omitted.body);
+    });
+
+    it('placement=board excludes swept tickets; placement=completed returns only them', async () => {
+      const cols = (await request(app).get(`/api/v1/projects/${projectId}/columns`).set(auth)).body as {
+        id: string;
+      }[];
+      await request(app)
+        .patch(`/api/v1/projects/${projectId}/columns/${cols[4].id}`)
+        .set(auth)
+        .send({ isCompletionColumn: true })
+        .expect(200);
+      const onBoard = await createTicket({ name: 'OnBoard', complexity: 1 });
+      const willSweep = await createTicket({ name: 'WillSweep', complexity: 1 });
+
+      // Sweeping requires every ticket on the board to land in the
+      // completion column, so move OnBoard there too, then move it right
+      // back out -- leaving WillSweep as the only ticket actually swept.
+      await request(app)
+        .post(`/api/v1/tickets/${onBoard.body.id}/move`)
+        .set(auth)
+        .send({ targetColumnId: cols[4].id })
+        .expect(200);
+      const sweepMove = await request(app)
+        .post(`/api/v1/tickets/${willSweep.body.id}/move`)
+        .set(auth)
+        .send({ targetColumnId: cols[4].id })
+        .expect(200);
+      expect(sweepMove.body.sweep).not.toBeNull();
+      // OnBoard was swept along with WillSweep (whole-board sweep); restore
+      // it to the board so this test actually has one ticket on the board
+      // and one completed.
+      await request(app)
+        .post(`/api/v1/tickets/${onBoard.body.id}/move`)
+        .set(auth)
+        .send({ targetColumnId: cols[0].id })
+        .expect(200);
+
+      const board = await request(app)
+        .get(`/api/v1/projects/${projectId}/tickets?placement=board`)
+        .set(auth);
+      expect(board.status).toBe(200);
+      expect(board.body.map((t: { id: string }) => t.id)).toEqual([onBoard.body.id]);
+
+      const completed = await request(app)
+        .get(`/api/v1/projects/${projectId}/tickets?placement=completed`)
+        .set(auth);
+      expect(completed.status).toBe(200);
+      expect(completed.body.map((t: { id: string }) => t.id)).toEqual([willSweep.body.id]);
+    });
+
+    it('rejects an invalid placement value with 400 VALIDATION', async () => {
+      const res = await request(app)
+        .get(`/api/v1/projects/${projectId}/tickets?placement=bogus`)
+        .set(auth);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION');
+    });
+
+    it('composes correctly with the parent filter', async () => {
+      const p = await createTicket({ name: 'P', complexity: 1 });
+      const s1 = await createTicket({ name: 'S1', complexity: 1, parentTicketId: p.body.id });
+      const s2 = await createTicket({ name: 'S2', complexity: 1, parentTicketId: p.body.id });
+      // Mark s1 completed directly -- the sweep mechanism itself is covered
+      // elsewhere; this test is only about how placement composes with
+      // parent in the query.
+      await prisma.ticket.update({ where: { id: s1.body.id }, data: { columnId: null } });
+
+      const boardSubs = await request(app)
+        .get(`/api/v1/projects/${projectId}/tickets?placement=board&parent=${p.body.id}`)
+        .set(auth);
+      expect(boardSubs.body.map((t: { id: string }) => t.id)).toEqual([s2.body.id]);
+
+      const completedSubs = await request(app)
+        .get(`/api/v1/projects/${projectId}/tickets?placement=completed&parent=${p.body.id}`)
+        .set(auth);
+      expect(completedSubs.body.map((t: { id: string }) => t.id)).toEqual([s1.body.id]);
+    });
+  });
+
+  // T054 (FR-025): a project's previous sweeps must have no effect on newly
+  // created tickets -- creation always places a new ticket on the board,
+  // however many times the project has been swept before.
+  it('T054: creation still places new tickets on the board after the project has already been swept', async () => {
+    const colsRes = await request(app).get(`/api/v1/projects/${projectId}/columns`).set(auth);
+    const cols = colsRes.body as { id: string; name: string }[];
+    await request(app)
+      .patch(`/api/v1/projects/${projectId}/columns/${cols[4].id}`)
+      .set(auth)
+      .send({ isCompletionColumn: true })
+      .expect(200);
+
+    // Sweep the board twice in a row, via the real move endpoint -- not a
+    // direct DB write -- so the project genuinely carries sweep history.
+    for (let cycle = 0; cycle < 2; cycle++) {
+      const t = await createTicket({ name: `Cycle${cycle}`, complexity: 1 });
+      const moved = await request(app)
+        .post(`/api/v1/tickets/${t.body.id}/move`)
+        .set(auth)
+        .send({ targetColumnId: cols[4].id });
+      expect(moved.body.sweep).not.toBeNull();
+    }
+
+    const created = await createTicket({ name: 'AfterSweeps', complexity: 1 });
+    expect(created.status).toBe(201);
+    expect(created.body.columnId).not.toBeNull();
+    expect(created.body.columnId).toBe(cols[0].id);
+
+    const db = await prisma.ticket.findUnique({ where: { id: created.body.id } });
+    expect(db!.columnId).toBe(cols[0].id);
   });
 });

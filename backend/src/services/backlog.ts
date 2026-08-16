@@ -13,6 +13,13 @@ const SORTS: Record<string, (order: 'asc' | 'desc') => Prisma.TicketOrderByWithR
 
 type TicketRow = Prisma.TicketGetPayload<{ include: { column: true; label: true } }>;
 
+// The reserved status marker for a swept (off-board) ticket. `completed` is
+// the authoritative, machine-readable flag -- `status` is display text only
+// and can collide with a user-chosen column name of the same text
+// (research.md R6), so consumers must branch on `completed`, not on this
+// string.
+const COMPLETED_STATUS = 'Completed';
+
 interface BacklogItem {
   id: string;
   number: number;
@@ -21,11 +28,15 @@ interface BacklogItem {
   complexity: number;
   parentTicketId: string | null;
   status: string;
+  completed: boolean;
   label: string | null;
   subtasks: BacklogItem[];
 }
 
 function toItem(t: TicketRow, subtasks: BacklogItem[] = []): BacklogItem {
+  // A ticket is completed (swept off the board) iff columnId is null (T043,
+  // FR-018, FR-019) -- the same predicate sweep.ts uses.
+  const completed = t.columnId === null;
   return {
     id: t.id,
     number: t.number,
@@ -33,7 +44,8 @@ function toItem(t: TicketRow, subtasks: BacklogItem[] = []): BacklogItem {
     description: t.description,
     complexity: t.complexity,
     parentTicketId: t.parentTicketId,
-    status: t.column.name,
+    status: completed ? COMPLETED_STATUS : (t.column?.name ?? ''),
+    completed,
     label: t.label?.name ?? null,
     subtasks,
   };

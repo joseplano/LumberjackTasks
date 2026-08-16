@@ -12,8 +12,8 @@ const project = {
   createdAt: '',
   updatedAt: '',
   columns: [
-    { id: 'c1', projectId: 'p1', name: 'TODO', position: 0 },
-    { id: 'c2', projectId: 'p1', name: 'In development', position: 1 },
+    { id: 'c1', projectId: 'p1', name: 'TODO', position: 0, isCompletionColumn: false },
+    { id: 'c2', projectId: 'p1', name: 'In development', position: 1, isCompletionColumn: false },
   ],
   labels: [],
   phases: [],
@@ -86,5 +86,19 @@ describe('Board', () => {
     render(<Board project={project} tickets={tickets} onTicketClick={onTicketClick} />);
     screen.getByText('Parent ticket').click();
     expect(onTicketClick).toHaveBeenCalledWith('t1');
+  });
+
+  // T047 (FR-019a): a completed (swept) ticket has columnId null, which
+  // matches no column's id, so it must not render in any board column.
+  it('excludes a ticket with a null columnId from every board column', async () => {
+    const swept = {
+      ...tickets[0],
+      id: 't3',
+      name: 'Swept ticket',
+      parentTicketId: null,
+      columnId: null,
+    };
+    render(<Board project={project} tickets={[...tickets, swept]} onTicketClick={vi.fn()} />);
+    expect(screen.queryByText('Swept ticket')).not.toBeInTheDocument();
   });
 });

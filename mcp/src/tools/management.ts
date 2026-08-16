@@ -9,17 +9,21 @@ export function registerManagementTools(server: McpServer) {
     {
       title: 'Manage kanban columns',
       description:
-        "Manage a project's kanban columns. Actions: list, create (name), rename (columnId, name), reorder (orderedIds), delete (columnId; moveTo required by the backend when the column still has tickets).",
+        "Manage a project's kanban columns. Actions: list, create (name), rename (columnId, name), reorder (orderedIds), delete (columnId; moveTo required by the backend when the column still has tickets), set_completion (columnId, isCompletionColumn) marks a column as the project's completion column, or clears it. A project has at most one; designating a second moves the designation. When every ticket left on the board is in the completion column, the backend automatically sweeps them all off the board and they become completed tickets, visible in the backlog.",
       inputSchema: {
         projectId: z.string(),
-        action: z.enum(['list', 'create', 'rename', 'reorder', 'delete']),
-        columnId: z.string().optional().describe('Required for rename and delete'),
+        action: z.enum(['list', 'create', 'rename', 'reorder', 'delete', 'set_completion']),
+        columnId: z.string().optional().describe('Required for rename, delete and set_completion'),
         name: z.string().optional().describe('Required for create and rename'),
         orderedIds: z.array(z.string()).optional().describe('Required for reorder: all column ids in the new order'),
         moveTo: z.string().optional().describe('Destination column id when deleting a column that has tickets'),
+        isCompletionColumn: z
+          .boolean()
+          .optional()
+          .describe('Required for set_completion: true designates this column, false clears it'),
       },
     },
-    async ({ projectId, action, columnId, name, orderedIds, moveTo }) => {
+    async ({ projectId, action, columnId, name, orderedIds, moveTo, isCompletionColumn }) => {
       const base = `/projects/${encodeURIComponent(projectId)}/columns`;
       switch (action) {
         case 'list':
@@ -45,6 +49,15 @@ export function registerManagementTools(server: McpServer) {
             apiFetch(`${base}/${encodeURIComponent(columnId)}`, {
               method: 'DELETE',
               query: { moveTo },
+            }),
+          );
+        case 'set_completion':
+          if (!columnId) return fail('columnId is required for action "set_completion"');
+          if (isCompletionColumn === undefined) return fail('isCompletionColumn is required for action "set_completion"');
+          return run(() =>
+            apiFetch(`${base}/${encodeURIComponent(columnId)}`, {
+              method: 'PATCH',
+              body: { isCompletionColumn },
             }),
           );
       }

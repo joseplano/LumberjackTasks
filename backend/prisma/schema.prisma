@@ -35,12 +35,18 @@ model Project {
 }
 
 model KanbanColumn {
-  id        String   @id @default(uuid())
-  projectId String
-  name      String
-  position  Int
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  tickets   Ticket[]
+  id                 String   @id @default(uuid())
+  projectId          String
+  name               String
+  position           Int
+  /// At most one per project. Enforced by the partial unique index
+  /// "kanban_columns_projectId_completion_key" in
+  /// prisma/migrations/<dir>/migration.sql — Prisma's schema language cannot
+  /// express a filtered unique index, so it exists ONLY in that SQL file.
+  /// See specs/001-terminal-column-sweep/research.md R2. Do not drop it.
+  isCompletionColumn Boolean  @default(false)
+  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tickets            Ticket[]
 
   @@map("kanban_columns")
 }
@@ -63,7 +69,7 @@ model Ticket {
   parentTicketId         String?
   name                   String
   description            String                @default("")
-  columnId               String
+  columnId               String?
   complexity             Int
   labelId                String?
   phaseId                String?
@@ -73,7 +79,16 @@ model Ticket {
   createdAt              DateTime              @default(now())
   updatedAt              DateTime              @updatedAt
   project                Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  column                 KanbanColumn          @relation(fields: [columnId], references: [id])
+  // onDelete: Restrict must stay explicit: Prisma's default onDelete
+  // depends on optionality (required -> Restrict, optional -> SetNull), and
+  // this relation is optional (columnId is nullable for completed/off-board
+  // tickets). Without an explicit action here, Prisma would declare SetNull,
+  // which would silently null out columnId on column deletion and fabricate
+  // "completed" tickets with no TicketStatusHistory row, no board.swept
+  // audit entry, and no board.swept event -- see data-model.md, "The
+  // existing foreign key keeps its default onDelete behavior" (Restrict, as
+  // originally migrated).
+  column                 KanbanColumn?         @relation(fields: [columnId], references: [id], onDelete: Restrict)
   label                  Label?                @relation(fields: [labelId], references: [id], onDelete: SetNull)
   phase                  Phase?                @relation(fields: [phaseId], references: [id], onDelete: SetNull)
   parent                 Ticket?               @relation("Subtickets", fields: [parentTicketId], references: [id], onDelete: Cascade)

@@ -246,4 +246,95 @@ describe('ticket tools', () => {
     expect(JSON.parse(String(calls[0].init.body))).toEqual({ targetColumnId: 'c2', timeDelta: 30 });
     await close();
   });
+
+  // T049a (contracts/mcp-tools.md "Asserting the absence of sweep logic"):
+  // this layer must forward the backend response verbatim -- no branching on
+  // `sweep`, no treating a null columnId as an error, nothing added,
+  // removed or rewritten. Any of that would mean sweep logic leaked into
+  // mcp/, violating Constitution Principle I.
+  it('T049a: move_ticket response fidelity -- a non-null sweep and null columnId pass through unchanged', async () => {
+    const backendResponse = {
+      id: 't1',
+      columnId: null,
+      sweep: {
+        completionColumnId: 'c9',
+        completionColumnName: 'Done',
+        ticketCount: 2,
+        ticketIds: ['t1', 't2'],
+      },
+    };
+    const calls = stubBackendFetch(() => ({ status: 200, body: backendResponse }));
+    const { client, close } = await connectClient();
+    const result = await client.callTool({
+      name: 'move_ticket',
+      arguments: { ticketId: 't1', targetColumnId: 'c9' },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toBe(JSON.stringify(backendResponse, null, 2));
+    expect(calls[0].url.pathname).toBe('/api/v1/tickets/t1/move');
+    await close();
+  });
+
+  it('T049a: move_subticket response fidelity -- a non-null sweep and null columnId pass through unchanged', async () => {
+    const backendResponse = {
+      id: 't2',
+      columnId: null,
+      sweep: {
+        completionColumnId: 'c9',
+        completionColumnName: 'Done',
+        ticketCount: 1,
+        ticketIds: ['t2'],
+      },
+    };
+    const calls = stubBackendFetch(() => ({ status: 200, body: backendResponse }));
+    const { client, close } = await connectClient();
+    const result = await client.callTool({
+      name: 'move_subticket',
+      arguments: { subticketId: 't2', targetColumnId: 'c9' },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toBe(JSON.stringify(backendResponse, null, 2));
+    expect(calls[0].url.pathname).toBe('/api/v1/tickets/t2/move');
+    await close();
+  });
+
+  it('T049a: list_tickets forwards placement verbatim, and sends no placement at all when omitted', async () => {
+    const calls = stubBackendFetch(() => ({ status: 200, body: [] }));
+    const { client, close } = await connectClient();
+    await client.callTool({
+      name: 'list_tickets',
+      arguments: { projectId: 'p1', placement: 'board' },
+    });
+    await client.callTool({
+      name: 'list_tickets',
+      arguments: { projectId: 'p1', placement: 'completed' },
+    });
+    await client.callTool({ name: 'list_tickets', arguments: { projectId: 'p1' } });
+    expect(calls[0].url.searchParams.get('placement')).toBe('board');
+    expect(calls[1].url.searchParams.get('placement')).toBe('completed');
+    expect(calls[2].url.searchParams.has('placement')).toBe(false);
+    await close();
+  });
+
+  it('T049a: list_tickets composes placement with parent, and rejects an invalid placement at the schema level', async () => {
+    const calls = stubBackendFetch(() => ({ status: 200, body: [] }));
+    const { client, close } = await connectClient();
+    await client.callTool({
+      name: 'list_tickets',
+      arguments: { projectId: 'p1', parent: 'none', placement: 'all' },
+    });
+    expect(calls[0].url.searchParams.get('parent')).toBe('none');
+    expect(calls[0].url.searchParams.get('placement')).toBe('all');
+
+    const result = await client.callTool({
+      name: 'list_tickets',
+      arguments: { projectId: 'p1', placement: 'bogus' },
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(
+      /MCP error -32602: Input validation error: Invalid arguments for tool list_tickets/,
+    );
+    expect(calls).toHaveLength(1); // only the prior valid call went to the backend
+    await close();
+  });
 });

@@ -100,6 +100,39 @@ describe('validateParentMove', () => {
   it('allows any move for a parent without subtickets', () => {
     expect(() => validateParentMove(5, 0, [])).not.toThrow();
   });
+
+  it('never blocks a parent on a completed (null-position) subticket', () => {
+    // FR-011a: completed / off the board ranks strictly after every column,
+    // so a null subticket position can never be "behind" the target and can
+    // never join the blocking set.
+    expect(() => validateParentMove(2, 1, [null, 3])).not.toThrow();
+    expect(() => validateParentMove(5, 0, [null])).not.toThrow();
+  });
+
+  it('still blocks a forward move when an on-board subticket is behind, alongside a completed one', () => {
+    // Regression: a null-position (completed) subticket must not mask a real
+    // on-board subticket that IS behind the target.
+    expect(() => validateParentMove(2, 1, [1, null])).toThrow(ApiError);
+    try {
+      validateParentMove(2, 1, [1, null]);
+    } catch (e) {
+      expect((e as ApiError).status).toBe(409);
+      expect((e as ApiError).code).toBe('PARENT_MOVE_BLOCKED');
+    }
+  });
+
+  it('allows a completed ticket (null currentPosition) to move to any column', () => {
+    // FR-011a: a completed ticket's own position ranks after every column,
+    // so restoring it to any column is always a backward move.
+    // These cases are non-vacuous: targetPosition > 0 and a subticket
+    // strictly behind it means the pre-fix comparison (`targetPosition <=
+    // currentPosition` with no `?? RANK_OFF_BOARD`, i.e. `5 <= null` ->
+    // `5 <= 0` -> false) would fall through and throw PARENT_MOVE_BLOCKED,
+    // while the fix (`currentRank = currentPosition ?? RANK_OFF_BOARD` ->
+    // Infinity) short-circuits on the backward-move check and never throws.
+    expect(() => validateParentMove(5, null, [1])).not.toThrow();
+    expect(() => validateParentMove(3, null, [2])).not.toThrow();
+  });
 });
 
 describe('aggregateTotals', () => {

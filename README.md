@@ -31,6 +31,7 @@ and the **marketplace** that publishes the plugin.
 - [Quickstart](#quickstart)
 - [Install the plugin](#install-the-plugin)
 - [Opt a repo in](#opt-a-repo-in)
+- [Completion columns & automatic sweep](#completion-columns--automatic-sweep)
 - [Configuration](#configuration)
 - [Architecture](#architecture)
 - [🔒 Security](#-security)
@@ -107,6 +108,35 @@ In any repo you want tracked:
 
 That links the repo to a ticket project and writes `.claude/ticket-project.json`. Repos you never
 opt in stay untouched — the plugin is silent in them.
+
+## Completion columns & automatic sweep
+
+In a project's settings, under **Kanban columns**, an operator may designate exactly one column
+as that project's **completion column** (an automated agent can do the same via the MCP tool
+`manage_columns` with `action: 'set_completion'`). A project has **at most one** completion
+column: designating a second one moves the designation, and it can be cleared entirely.
+**Existing projects start with none**, so nothing changes for a project until an operator opts in.
+
+Once a completion column is set, moving a ticket into it re-checks the board: if no ticket remains
+in any *other* column of the project, the backend automatically sweeps every ticket out of the
+completion column, in the same transaction as the move that triggered it. Nothing is deleted —
+each swept ticket stays in the project backlog marked completed, keeping its history, phase,
+label, nesting and token/time totals, and it keeps counting in every report and metric. The
+backlog shows completed tickets with a `Completed` status (and a machine-readable `completed:
+true` flag) that's visually distinct from tickets still on the board, alongside a **Restore**
+action that puts a ticket back on the board through the existing move — there is no separate
+restore endpoint.
+
+A few implementation notes for anyone driving the API directly:
+
+- `GET /projects/:projectId/tickets` takes an optional `placement` query parameter
+  (`board` | `completed` | `all`; defaults to `all`, so existing callers are unaffected). The
+  board UI calls it with `placement=board`.
+- The move response gained an additive `sweep` field — `null` when no sweep fired. When a sweep
+  does fire, the moved ticket's own `columnId` comes back `null`; that's the expected outcome of
+  landing in a now-swept completion column, not an error.
+- A sweep emits one `board.swept` live-update event, so any board already open elsewhere reflects
+  the emptied columns without a manual refresh.
 
 ## Configuration
 
