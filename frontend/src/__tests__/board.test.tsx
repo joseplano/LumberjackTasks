@@ -87,4 +87,18 @@ describe('Board', () => {
     screen.getByText('Parent ticket').click();
     expect(onTicketClick).toHaveBeenCalledWith('t1');
   });
+
+  // T047 (FR-019a): a completed (swept) ticket has columnId null, which
+  // matches no column's id, so it must not render in any board column.
+  it('excludes a ticket with a null columnId from every board column', async () => {
+    const swept = {
+      ...tickets[0],
+      id: 't3',
+      name: 'Swept ticket',
+      parentTicketId: null,
+      columnId: null,
+    };
+    render(<Board project={project} tickets={[...tickets, swept]} onTicketClick={vi.fn()} />);
+    expect(screen.queryByText('Swept ticket')).not.toBeInTheDocument();
+  });
 });

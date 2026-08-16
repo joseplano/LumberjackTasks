@@ -44,11 +44,19 @@ export function registerTicketTools(server: McpServer) {
       inputSchema: {
         projectId: z.string(),
         parent: z.string().optional().describe("'none' or a parent ticket id"),
+        placement: z
+          .enum(['board', 'completed', 'all'])
+          .optional()
+          .describe(
+            "placement: 'board' for tickets currently in a column, 'completed' for tickets already swept off the board, 'all' (default) for both.",
+          ),
       },
     },
-    async ({ projectId, parent }) =>
+    async ({ projectId, parent, placement }) =>
       run(() =>
-        apiFetch(`/projects/${encodeURIComponent(projectId)}/tickets`, { query: { parent } }),
+        apiFetch(`/projects/${encodeURIComponent(projectId)}/tickets`, {
+          query: { parent, placement },
+        }),
       ),
   );
 

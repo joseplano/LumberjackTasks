@@ -120,12 +120,26 @@ export async function createTicket(userId: string, projectId: string, data: Tick
   return created;
 }
 
-export async function listTickets(projectId: string, parent?: string) {
+const PLACEMENTS = ['board', 'completed', 'all'] as const;
+type Placement = (typeof PLACEMENTS)[number];
+
+// T044 (FR-019a, research.md R4): `placement` defaults to 'all' -- identical
+// to today's unfiltered listing -- because silently changing that default
+// would change the meaning of the published MCP tool `list_tickets`.
+export async function listTickets(projectId: string, parent?: string, placement?: string) {
   await getProject(projectId);
+  if (placement !== undefined && !PLACEMENTS.includes(placement as Placement)) {
+    throw new ApiError(400, 'VALIDATION', `placement must be one of ${PLACEMENTS.join(', ')}`);
+  }
   return prisma.ticket.findMany({
     where: {
       projectId,
       ...(parent === 'none' ? { parentTicketId: null } : parent ? { parentTicketId: parent } : {}),
+      ...(placement === 'board'
+        ? { columnId: { not: null } }
+        : placement === 'completed'
+          ? { columnId: null }
+          : {}),
     },
     include: { label: true, column: true },
     orderBy: { number: 'asc' },

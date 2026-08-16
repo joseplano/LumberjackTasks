@@ -27,7 +27,15 @@ function TicketRow({
       </td>
       <td className="p-2">{item.name}</td>
       <td className="p-2 text-fg-muted">{item.description}</td>
-      <td className="p-2">{item.status}</td>
+      <td className="p-2">
+        {item.completed ? (
+          <span className="rounded-omarchy border border-border bg-surface-2 px-1.5 py-0.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
+            {item.status}
+          </span>
+        ) : (
+          item.status
+        )}
+      </td>
       <td className="p-2">{item.label ?? '—'}</td>
     </tr>
   );

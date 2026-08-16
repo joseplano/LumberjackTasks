@@ -37,6 +37,7 @@ const backlog = {
           complexity: 5,
           parentTicketId: null,
           status: 'In development',
+          completed: false,
           label: 'feature',
           subtasks: [
             {
@@ -47,6 +48,7 @@ const backlog = {
               complexity: 2,
               parentTicketId: 't1',
               status: 'Done',
+              completed: false,
               label: null,
               subtasks: [],
             },
@@ -64,7 +66,8 @@ const backlog = {
           description: '',
           complexity: 3,
           parentTicketId: null,
-          status: 'Done',
+          status: 'Completed',
+          completed: true,
           label: null,
           subtasks: [],
         },
@@ -120,6 +123,23 @@ describe('BacklogPage', () => {
     const noPhaseHeader = screen.getByRole('button', { name: /No phase/ });
     expect(noPhaseHeader).toHaveTextContent('(1)');
     expect(screen.getByText('Setup CI')).toBeInTheDocument();
+  });
+
+  it('renders a completed (swept) ticket distinguishably, keyed off the completed flag (T046)', async () => {
+    render(<BacklogPage />);
+    await screen.findByText('Setup CI');
+
+    // Setup CI is completed: true with status 'Completed'. It must render
+    // wrapped in a distinguishing marker (not plain text like the on-board
+    // rows), proving the page branches on `completed` rather than just
+    // printing `status`.
+    const completedLabel = screen.getByText('Completed');
+    expect(completedLabel.tagName).not.toBe('TD');
+
+    // An on-board ticket with the same-looking status text is rendered as
+    // plain text, not wrapped in the completed marker.
+    const onBoardLabel = screen.getByText('In development');
+    expect(onBoardLabel.tagName).toBe('TD');
   });
 
   it('renders the "No phase" group last', async () => {

@@ -6,7 +6,13 @@ type ProjectParams = { projectId: string };
 const router = Router({ mergeParams: true });
 
 router.get('/', async (req: Request<ProjectParams>, res) => {
-  res.json(await listTickets(req.params.projectId, req.query.parent as string | undefined));
+  res.json(
+    await listTickets(
+      req.params.projectId,
+      req.query.parent as string | undefined,
+      req.query.placement as string | undefined,
+    ),
+  );
 });
 
 router.post('/', async (req: Request<ProjectParams>, res) => {

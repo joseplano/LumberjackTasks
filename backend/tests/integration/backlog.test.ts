@@ -315,4 +315,82 @@ describe('backlog', () => {
     );
     expect(names).toEqual(['Charlie Parent']);
   });
+
+  // T039 (FR-018, FR-019): a swept ticket (columnId null) must stay listed in
+  // the backlog, marked as completed, with its phase grouping, subtask
+  // nesting, labels and totals all intact -- and it must still count toward
+  // `total`. Uses its own project so it does not disturb the sort/grouping
+  // fixture above.
+  describe('completed tickets (T039)', () => {
+    it('keeps a swept ticket listed with the Completed marker, retaining phase, subtasks, labels and totals', async () => {
+      const proj = await request(app).post('/api/v1/projects').set(auth).send({ name: 'Sweepable' });
+      const pid = proj.body.id;
+      const cols = (await request(app).get(`/api/v1/projects/${pid}/columns`).set(auth)).body as {
+        id: string;
+        name: string;
+      }[];
+      await request(app)
+        .patch(`/api/v1/projects/${pid}/columns/${cols[4].id}`)
+        .set(auth)
+        .send({ isCompletionColumn: true })
+        .expect(200);
+
+      const phase = (
+        await request(app).post(`/api/v1/projects/${pid}/phases`).set(auth).send({ name: 'Ph' })
+      ).body as { id: string };
+      const label = (
+        await request(app).post(`/api/v1/projects/${pid}/labels`).set(auth).send({ name: 'lbl' })
+      ).body as { id: string };
+
+      const mk = async (name: string, opts: Record<string, unknown> = {}) =>
+        (
+          await request(app)
+            .post(`/api/v1/projects/${pid}/tickets`)
+            .set(auth)
+            .send({ name, description: '', complexity: 1, ...opts })
+            .expect(201)
+        ).body as { id: string };
+
+      const parent = await mk('Parent', {
+        phaseId: phase.id,
+        labelId: label.id,
+        tokensConsumed: 42,
+        llmName: 'claude',
+      });
+      const sub = await mk('Sub', { parentTicketId: parent.id });
+
+      // Sweep the whole board: parent + sub are the project's only tickets.
+      await request(app)
+        .post(`/api/v1/tickets/${sub.id}/move`)
+        .set(auth)
+        .send({ targetColumnId: cols[4].id })
+        .expect(200);
+      const sweepMove = await request(app)
+        .post(`/api/v1/tickets/${parent.id}/move`)
+        .set(auth)
+        .send({ targetColumnId: cols[4].id })
+        .expect(200);
+      expect(sweepMove.body.sweep).not.toBeNull();
+
+      const res = await request(app).get(`/api/v1/projects/${pid}/backlog`).set(auth);
+      expect(res.status).toBe(200);
+      // total still counts the swept top-level ticket (FR-019b).
+      expect(res.body.total).toBe(1);
+
+      const group = res.body.groups.find(
+        (g: { phase: { id: string } | null }) => g.phase?.id === phase.id,
+      );
+      expect(group).toBeDefined();
+      const item = group.tickets.find((t: { id: string }) => t.id === parent.id);
+      expect(item).toBeDefined();
+      expect(item.status).toBe('Completed');
+      expect(item.completed).toBe(true);
+      expect(item.label).toBe('lbl');
+      expect(item.complexity).toBe(1);
+      expect(item.subtasks).toHaveLength(1);
+      expect(item.subtasks[0].id).toBe(sub.id);
+      expect(item.subtasks[0].status).toBe('Completed');
+      expect(item.subtasks[0].completed).toBe(true);
+    });
+  });
 });

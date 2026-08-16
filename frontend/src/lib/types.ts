@@ -81,6 +81,10 @@ export interface BacklogItem {
   complexity: number;
   parentTicketId: string | null;
   status: string;
+  // Authoritative, machine-readable flag for a swept (off-board) ticket.
+  // Branch on this, not on `status` -- `status` is display text and can
+  // collide with a user-chosen column name of the same text.
+  completed: boolean;
   label: string | null;
   subtasks: BacklogItem[];
 }

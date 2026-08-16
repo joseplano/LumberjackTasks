@@ -134,4 +134,60 @@ describe('reports', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ mostChanges: [], mostTokensInProcess: [], longestTransition: [] });
   });
+
+  // T041 (FR-019b, SC-011): a sweep must not change any project-wide report
+  // figure. most-active and consumption aggregate purely off ticket
+  // tokensConsumed/developmentTimeMinutes, which the sweep never touches
+  // (it only nullifies columnId) -- so these must read identically
+  // immediately before and immediately after a sweep fires.
+  it('T041: most-active and consumption report figures are unchanged by a sweep', async () => {
+    const p = await makeProject('Sweeper');
+    const cols = (await request(app).get(`/api/v1/projects/${p.id}/columns`).set(auth)).body as {
+      id: string;
+    }[];
+    await request(app)
+      .patch(`/api/v1/projects/${p.id}/columns/${cols[4].id}`)
+      .set(auth)
+      .send({ isCompletionColumn: true })
+      .expect(200);
+    const t1 = await makeTicket(p.id, {
+      name: 'T1',
+      complexity: 1,
+      tokensConsumed: 100,
+      llmName: 'claude',
+      developmentTimeMinutes: 20,
+    });
+    const t2 = await makeTicket(p.id, {
+      name: 'T2',
+      complexity: 1,
+      tokensConsumed: 50,
+      llmName: 'claude',
+      developmentTimeMinutes: 10,
+    });
+
+    const beforeActive = await request(app).get('/api/v1/reports/most-active').set(auth);
+    const beforeConsumption = await request(app).get('/api/v1/reports/consumption').set(auth);
+    expect(beforeActive.status).toBe(200);
+    expect(beforeConsumption.status).toBe(200);
+
+    // No tokensDelta/timeDelta on either move -- the sweep is the only thing
+    // that changes about these tickets.
+    await request(app)
+      .post(`/api/v1/tickets/${t1.id}/move`)
+      .set(auth)
+      .send({ targetColumnId: cols[4].id })
+      .expect(200);
+    const sweepMove = await request(app)
+      .post(`/api/v1/tickets/${t2.id}/move`)
+      .set(auth)
+      .send({ targetColumnId: cols[4].id })
+      .expect(200);
+    expect(sweepMove.body.sweep).not.toBeNull();
+
+    const afterActive = await request(app).get('/api/v1/reports/most-active').set(auth);
+    const afterConsumption = await request(app).get('/api/v1/reports/consumption').set(auth);
+
+    expect(afterActive.body).toEqual(beforeActive.body);
+    expect(afterConsumption.body).toEqual(beforeConsumption.body);
+  });
 });
