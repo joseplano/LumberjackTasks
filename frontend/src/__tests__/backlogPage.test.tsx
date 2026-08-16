@@ -259,6 +259,58 @@ describe('BacklogPage', () => {
     expect(api).not.toHaveBeenCalledWith('/tickets/t9');
   });
 
+  it('T055a (FR-023a): restores into the first column that is NOT the completion column', async () => {
+    // The completion column sits first by position here, so choosing "the first
+    // column" outright would send the ticket straight back into it. On an
+    // otherwise empty board that re-satisfies the sweep condition immediately
+    // and bounces the ticket off the board again -- the operator clicks Restore
+    // and nothing visibly happens. This test fails under that naive choice.
+    const completionColumnFirst = {
+      ...project,
+      columns: [
+        { id: 'c2', projectId: 'p1', name: 'Done', position: 0, isCompletionColumn: true },
+        { id: 'c1', projectId: 'p1', name: 'TODO', position: 1, isCompletionColumn: false },
+      ],
+    };
+    vi.mocked(api).mockImplementation((path: string) => {
+      if (path.startsWith('/projects/p1/backlog')) return Promise.resolve(backlog);
+      if (path.startsWith('/tickets/')) return Promise.resolve(ticketDetail);
+      return Promise.resolve(completionColumnFirst);
+    });
+
+    render(<BacklogPage />);
+    await screen.findByText('Setup CI');
+    await userEvent.click(screen.getByRole('button', { name: /restore/i }));
+
+    expect(api).toHaveBeenCalledWith('/tickets/t9/move', {
+      method: 'POST',
+      body: { targetColumnId: 'c1' },
+    });
+  });
+
+  it('T055a (FR-023a): falls back to the completion column when it is the only column', async () => {
+    // Nothing else to pick. The immediate re-sweep is the documented outcome
+    // for a single-column project, not a reason to disable the affordance.
+    const onlyCompletionColumn = {
+      ...project,
+      columns: [{ id: 'c2', projectId: 'p1', name: 'Done', position: 0, isCompletionColumn: true }],
+    };
+    vi.mocked(api).mockImplementation((path: string) => {
+      if (path.startsWith('/projects/p1/backlog')) return Promise.resolve(backlog);
+      if (path.startsWith('/tickets/')) return Promise.resolve(ticketDetail);
+      return Promise.resolve(onlyCompletionColumn);
+    });
+
+    render(<BacklogPage />);
+    await screen.findByText('Setup CI');
+    await userEvent.click(screen.getByRole('button', { name: /restore/i }));
+
+    expect(api).toHaveBeenCalledWith('/tickets/t9/move', {
+      method: 'POST',
+      body: { targetColumnId: 'c2' },
+    });
+  });
+
   it('collapses a group to hide its tickets, and restores them when expanded again', async () => {
     render(<BacklogPage />);
     await screen.findByText('Login endpoint');

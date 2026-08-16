@@ -140,15 +140,18 @@ Existing endpoint, existing pagination, sorting and phase grouping. Each backlog
 
 - `completed` is the authoritative, machine-readable flag (FR-019). Consumers must branch on it rather than on the `status` string, which is display text and can collide with a user-chosen column name.
 - `status` remains the column's name for on-board tickets and becomes `"Completed"` for swept ones.
-- **`total` still counts every top-level ticket, swept or not** (FR-019b). Sorting by `status` continues to work; completed tickets sort under the marker value.
+- **`total` still counts every top-level ticket, swept or not** (FR-019b).
+- Sorting by `status` continues to work, but **not under the marker value**. The sort is applied in the database against the related column's name, while `"Completed"` is synthesized afterwards in `toItem`. A swept ticket therefore has no column name to sort by and orders as a NULL — last under ascending order, first under descending — rather than alphabetically among the column names. Consumers that need completed work grouped explicitly should filter with `placement` (§3) instead of relying on sort position.
 
 ---
 
 ## 6. Reports and metrics — explicitly unchanged
 
-`GET /reports/*` and `GET /projects/:id/metrics` keep their exact current shape *and their exact current numbers*. `backend/src/services/reports.ts` and `backend/src/services/metrics.ts` aggregate by `projectId` with no column predicate, so completed tickets keep counting with no code change (FR-019b).
+`GET /reports/*` and `GET /projects/:id/metrics` keep their exact current shape, and every **aggregate of recorded work** keeps its exact current numbers: token totals, time totals, per-ticket metrics and the backlog's ticket count. `backend/src/services/reports.ts` and `backend/src/services/metrics.ts` aggregate by `projectId` with no column predicate, so completed tickets keep counting with no code change (FR-019b).
 
-This is a contract that must be defended by a regression test, not merely observed: assert that project metrics and report figures are byte-identical immediately before and immediately after a sweep.
+**One report does legitimately move**: a report whose subject is movement itself. `GET /reports/transitions` counts `TicketStatusHistory` rows, and FR-020 requires the sweep to write one row per swept ticket, so `mostChanges` gains exactly one transition per swept ticket. This is not a defect and MUST NOT be "fixed" by filtering those rows out on the column name — the reserved name a swept ticket transitions to can collide with a user-chosen column name, which `backend/src/services/backlog.ts` already documents as unsafe. The blast radius is bounded and was traced: `mostTokensInProcess` is exactly unchanged, because sweep rows carry null token and time deltas, and `longestTransition` gains only zero-minute gaps that can never rank.
+
+This is a contract that must be defended by regression tests in both directions, not merely observed: assert that project metrics and work-aggregate report figures are identical immediately before and immediately after a sweep, **and** assert that the transition count grows by exactly one per swept ticket (FR-019c), so neither half can drift silently.
 
 ---
 

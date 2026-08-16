@@ -31,7 +31,7 @@ Four-package monorepo (see plan.md §Project Structure): `backend/src/`, `backen
 
 - [X] T001 Confirm work is on the `001-terminal-column-sweep` topic branch off `main`, per Constitution §Development Workflow
 - [X] T002 Record a green baseline by running all four suites and saving the output: `cd backend && npm test`, `cd mcp && npm test`, `cd frontend && npm test`, `node --test plugin/tests/*.test.mjs` (the plugin suite MUST use this glob form — the directory form fails with `MODULE_NOT_FOUND` on Windows)
-- [X] T003 [P] Capture the current project metrics and report figures for a seeded project as the comparison baseline for the FR-019b regression tasks (T041, T042)
+- [X] T003 [P] Capture the current project metrics and work-aggregate report figures for a seeded project as the comparison baseline for the FR-019b regression tasks (T041, T042). Capture the transition counts too — T041a needs them as its own before-figure, and there they are expected to grow rather than hold
 
 ---
 
@@ -129,7 +129,7 @@ Four-package monorepo (see plan.md §Project Structure): `backend/src/`, `backen
 
 **Goal**: Swept tickets remain visible and clearly marked in the backlog, disappear from the board, and change no reporting figure. Without this the sweep looks like deletion.
 
-**Independent Test**: Record the backlog and the metrics of a project, trigger a sweep, and confirm the same tickets appear with the same phase grouping and nesting, now marked completed, with every report figure unchanged. FR-018, FR-019, FR-019a, FR-019b.
+**Independent Test**: Record the backlog and the metrics of a project, trigger a sweep, and confirm the same tickets appear with the same phase grouping and nesting, now marked completed, with every work-aggregate report figure unchanged and the transition count grown by exactly one per swept ticket. FR-018, FR-019, FR-019a, FR-019b, FR-019c.
 
 **Depends on**: Phase 4 (needs sweeps to exist to observe).
 
@@ -137,7 +137,8 @@ Four-package monorepo (see plan.md §Project Structure): `backend/src/`, `backen
 
 - [X] T039 [P] [US3] Integration tests in `backend/tests/integration/backlog.test.ts` proving swept tickets stay listed with `completed: true` and the `Completed` status marker, retaining phase grouping, subtask nesting, labels and totals, and that `total` still counts them (FR-018, FR-019)
 - [X] T040 [P] [US3] Integration tests in `backend/tests/integration/tickets.test.ts` for the `placement` parameter: `board` excludes completed, `completed` returns only them, an invalid value returns `400 VALIDATION`, and **omitting it returns everything exactly as before** — that last assertion is what guards the no-breaking-change promise (FR-019a, research.md R4)
-- [X] T041 [P] [US3] Regression test in `backend/tests/integration/reports.test.ts` asserting every report figure is identical immediately before and immediately after a sweep (FR-019b, SC-011)
+- [X] T041 [P] [US3] Regression test in `backend/tests/integration/reports.test.ts` asserting that every **work-aggregate** report figure — the token and time aggregates behind `/reports/most-active` and `/reports/consumption` — is identical immediately before and immediately after a sweep (FR-019b, SC-011). `/reports/transitions` is deliberately **out of scope here** and is covered by T041a instead: it counts status-history rows, and FR-020 requires the sweep to write one per swept ticket, so it legitimately moves
+- [X] T041a [P] [US3] Regression test in `backend/tests/integration/reports.test.ts` pinning both halves of the FR-019b boundary: `/reports/transitions` gains **exactly one** transition per swept ticket, and `mostTokensInProcess` is exactly unchanged because sweep rows carry null token and time deltas (FR-019c). Include a comment warning against "fixing" the transition growth by filtering on the reserved `Completed` string, which can collide with a user-chosen column name
 - [X] T042 [P] [US3] Regression test in `backend/tests/integration/metrics.test.ts` asserting `GET /projects/:id/metrics` returns identical `totalTokens`, `totalTimeMinutes` and `ticketCount` across a sweep (FR-019b)
 
 ### Implementation for User Story 3
@@ -174,6 +175,7 @@ Four-package monorepo (see plan.md §Project Structure): `backend/src/`, `backen
 - [X] T053 [US4] Complete the restore path in `backend/src/services/moves.ts`: accept a ticket with a null `columnId` as the move subject, write the history row with `fromColumnName: 'Completed'`, and emit the usual `ticket.moved` audit entry (FR-023)
 - [X] T054 [US4] Confirm `createTicket` in `backend/src/services/tickets.ts` still places new tickets on the board unaffected by prior sweeps, and cover it in `backend/tests/integration/tickets.test.ts` (FR-025)
 - [X] T055 [P] [US4] Surface a restore affordance from the backlog in `frontend/src/app/(app)/projects/[id]/backlog/page.tsx`, reusing the existing move endpoint with no new endpoint, and cover it in `frontend/src/__tests__/backlogPage.test.tsx`
+- [X] T055a [US4] Make that affordance pick the first column that is **not** the completion column, falling back to the completion column only when it is the project's only column, in `frontend/src/app/(app)/projects/[id]/backlog/page.tsx` (FR-023a). Cover both branches in `frontend/src/__tests__/backlogPage.test.tsx`, with the completion column placed **first by position** in the fixture — otherwise the test passes under the naive "first column" choice and proves nothing. Restoring into the completion column of an otherwise empty board re-fires the sweep (T052) and bounces the ticket straight back to the backlog, so it must never be the default destination. Shares a file with T055 — author the two together
 
 **Checkpoint**: all four user stories are independently functional; the sweep is fully reversible
 

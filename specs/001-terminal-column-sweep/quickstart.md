@@ -48,7 +48,8 @@ node --test plugin/tests/*.test.mjs
 | Creation unaffected | `backend/tests/integration/tickets.test.ts` | New tickets are still placed on the board regardless of how many times the project was swept before (FR-025) |
 | Backlog | `backend/tests/integration/backlog.test.ts` | Swept tickets still listed, phase grouping and subtask nesting intact, `completed: true`, `total` unchanged (FR-018, FR-019) |
 | Board exclusion | `backend/tests/integration/tickets.test.ts` | `placement=board` excludes completed, `placement=completed` returns only them, and **omitting `placement` returns everything exactly as before** (FR-019a and the no-breaking-change promise) |
-| Reporting regression | `backend/tests/integration/reports.test.ts`, `metrics.test.ts` | Every report and metric figure is identical immediately before and after a sweep (FR-019b, SC-011) |
+| Reporting regression | `backend/tests/integration/reports.test.ts`, `metrics.test.ts` | Every work-aggregate report and metric figure — token totals, time totals, ticket count — is identical immediately before and after a sweep (FR-019b, SC-011) |
+| Transition-count boundary | `backend/tests/integration/reports.test.ts` | `/reports/transitions` gains exactly one transition per swept ticket, and `mostTokensInProcess` is exactly unchanged — the one report a sweep is allowed to move, and by how much (FR-019c) |
 | Ordering | `backend/tests/unit/` | `validateParentMove` treats a completed subticket as later than every column and never blocks a parent (FR-011a) |
 | Live update | `backend/tests/integration/events.test.ts` | Exactly one `board.swept` event per sweep, project-scoped (FR-022) |
 | Invariant | any backend integration test | No ordinary create or update path can leave a ticket with a null `columnId` |
@@ -77,7 +78,7 @@ Expect: every column empties, including `Done`. **The second tab empties too, wi
 
 **5. Reporting did not move.** Note the project metrics before step 3 and compare after. Identical (FR-019b).
 
-**6. Restore.** From the backlog, put one completed ticket back into `In development`. It reappears on the board; the backlog no longer marks it completed. Move it to `Done` — it is the only ticket on the board, so the board sweeps again (FR-023, FR-024, SC-009).
+**6. Restore.** From the backlog, click Restore on one completed ticket. It lands in `TODO` — the first column that is not the completion column, never `Done` itself, because restoring into the completion column of an empty board would sweep it straight back (FR-023a). It reappears on the board and the backlog no longer marks it completed. Now move it to `Done` — it is the only ticket on the board, so the board sweeps again (FR-023, FR-024, SC-009).
 
 **7. Opt-out still works.** Create a second project, designate nothing, and move every ticket into `Done`. Nothing is swept (FR-012, SC-006).
 

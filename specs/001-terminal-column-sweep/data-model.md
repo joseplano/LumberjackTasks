@@ -128,7 +128,7 @@ Enumerated so none is missed. Each was checked against the current source.
 | `backend/src/services/moves.ts` | Looks up the current column and throws `500 INTERNAL 'Ticket column missing'` when absent | That branch becomes the legitimate restore path; add the sweep call after the move, inside the same transaction |
 | `backend/src/services/ticketRules.ts` | `validateParentMove` assumes every position exists | Apply the ordering semantics above |
 | `backend/src/services/columns.ts` | `deleteColumn` counts tickets by `columnId`; `renameColumn` is the natural home for the designation change | Counting needs no change (null `columnId` is excluded by the equality predicate); add designation set/clear, transactional and audited |
-| `backend/src/services/reports.ts`, `backend/src/services/metrics.ts` | Aggregate by `projectId` with no column predicate | **No change.** Verified. Cover with a regression test asserting the numbers are identical across a sweep (FR-019b) |
+| `backend/src/services/reports.ts`, `backend/src/services/metrics.ts` | Aggregate by `projectId` with no column predicate | **No change.** Verified. Cover with a regression test asserting the work-aggregate numbers are identical across a sweep (FR-019b), plus one asserting `transitionsReport()` grows by exactly one transition per swept ticket, since it counts history rows and FR-020 adds them (FR-019c) |
 | `frontend/src/lib/types.ts` | Mirrors the API shapes | `KanbanColumn.isCompletionColumn: boolean`; `Ticket.columnId: string \| null`; `BacklogItem.completed: boolean` |
 | `mcp/src/tools/management.ts`, `mcp/src/tools/tickets.ts` | Expose columns and ticket listing to the agent | Pure passthrough for the designation and for `placement`; no rule logic (Principle I) |
 

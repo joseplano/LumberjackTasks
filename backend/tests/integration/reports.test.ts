@@ -191,14 +191,14 @@ describe('reports', () => {
     expect(afterConsumption.body).toEqual(beforeConsumption.body);
   });
 
-  // T052 (FR-020, I-2): pins the controller's deliberate ruling that
-  // transitionsReport() DOES legitimately change across a sweep -- FR-020
-  // unconditionally adds one TicketStatusHistory row per swept ticket, and
-  // this report counts history rows with no filtering. This must NOT later
-  // be "fixed" by filtering toColumnName === 'Completed' out of the report:
-  // that string is display text and can collide with a user-chosen column
-  // name of the same text (see the comment in backend/src/services/backlog.ts).
-  it('T052: a sweep increases mostChanges by exactly 1 per already-parked swept ticket, and leaves mostTokensInProcess exactly unchanged', async () => {
+  // T041a (FR-019c, FR-020): pins the boundary FR-019b draws. transitionsReport()
+  // DOES legitimately change across a sweep -- FR-020 unconditionally adds one
+  // TicketStatusHistory row per swept ticket, and this report counts history rows
+  // with no filtering. This must NOT later be "fixed" by filtering
+  // toColumnName === 'Completed' out of the report: that string is display text
+  // and can collide with a user-chosen column name of the same text (see the
+  // comment in backend/src/services/backlog.ts).
+  it('T041a: a sweep increases mostChanges by exactly 1 per already-parked swept ticket, and leaves mostTokensInProcess exactly unchanged', async () => {
     const p = await makeProject('Pinned');
     const cols = (await request(app).get(`/api/v1/projects/${p.id}/columns`).set(auth)).body as {
       id: string;
