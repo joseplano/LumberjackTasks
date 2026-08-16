@@ -56,36 +56,44 @@ export async function updateColumn(
     throw new ApiError(400, 'VALIDATION', 'name is required');
   }
 
-  let updated;
-  try {
-    updated = await prisma.$transaction(async (tx) => {
-      let result = column;
+  const updated = await prisma.$transaction(async (tx) => {
+    let result = column;
 
-      if (name !== undefined) {
-        result = await tx.kanbanColumn.update({
-          where: { id: columnId },
-          data: { name: name.trim() },
-        });
-        await logAudit(tx, {
-          userId,
-          action: 'column.renamed',
-          entityType: 'kanban_column',
-          entityId: columnId,
-          detail: { from: column.name, to: result.name },
-        });
-      }
+    if (name !== undefined) {
+      result = await tx.kanbanColumn.update({
+        where: { id: columnId },
+        data: { name: name.trim() },
+      });
+      await logAudit(tx, {
+        userId,
+        action: 'column.renamed',
+        entityType: 'kanban_column',
+        entityId: columnId,
+        detail: { from: column.name, to: result.name },
+      });
+    }
 
-      if (isCompletionColumn !== undefined) {
-        if (isCompletionColumn) {
-          // Mechanism: clear any other designated column of this project first,
-          // then set this one, inside the same transaction as the rename (if any).
-          // Guarantee: the partial unique index
-          // `kanban_columns_projectId_completion_key` (see
-          // backend/prisma/migrations/20260816_completion_column_sweep/migration.sql
-          // and research.md R2) is what actually prevents two designated columns
-          // from ever being visible at once under concurrent requests -- this
-          // clear-then-set alone is not sufficient under READ COMMITTED. Both are
-          // required; do not drop either. See the T018 tripwire test.
+    if (isCompletionColumn !== undefined) {
+      if (isCompletionColumn) {
+        // Mechanism: clear any other designated column of this project first,
+        // then set this one, inside the same transaction as the rename (if any).
+        // Guarantee: the partial unique index
+        // `kanban_columns_projectId_completion_key` (see
+        // backend/prisma/migrations/20260816_completion_column_sweep/migration.sql
+        // and research.md R2) is what actually prevents two designated columns
+        // from ever being visible at once under concurrent requests -- this
+        // clear-then-set alone is not sufficient under READ COMMITTED. Both are
+        // required; do not drop either. See the T018 tripwire test.
+        //
+        // The try/catch below is scoped tightly to exactly these two statements
+        // (not the rename above, not the clear-only branch below) because they
+        // are the only statements that can ever hit the partial unique index --
+        // an `updateMany` that only clears the flag, and an `update` on the
+        // primary key that sets it. We also check `err.meta?.target` names the
+        // completion index specifically, so a P2002 from some other unique
+        // constraint added to KanbanColumn in the future is never silently
+        // mislabeled as a completion-column conflict.
+        try {
           await tx.kanbanColumn.updateMany({
             where: { projectId, isCompletionColumn: true, id: { not: columnId } },
             data: { isCompletionColumn: false },
@@ -94,47 +102,60 @@ export async function updateColumn(
             where: { id: columnId },
             data: { isCompletionColumn: true },
           });
-          await logAudit(tx, {
-            userId,
-            action: 'column.completion_set',
-            entityType: 'kanban_column',
-            entityId: columnId,
-            detail: { name: result.name },
-          });
-        } else {
-          result = await tx.kanbanColumn.update({
-            where: { id: columnId },
-            data: { isCompletionColumn: false },
-          });
-          await logAudit(tx, {
-            userId,
-            action: 'column.completion_cleared',
-            entityType: 'kanban_column',
-            entityId: columnId,
-            detail: { name: result.name },
-          });
+        } catch (err) {
+          if (isCompletionIndexConflict(err)) {
+            throw new ApiError(
+              409,
+              'COMPLETION_COLUMN_CONFLICT',
+              'Another completion-column designation is in progress for this project; retry',
+            );
+          }
+          throw err;
         }
+        await logAudit(tx, {
+          userId,
+          action: 'column.completion_set',
+          entityType: 'kanban_column',
+          entityId: columnId,
+          detail: { name: result.name },
+        });
+      } else {
+        result = await tx.kanbanColumn.update({
+          where: { id: columnId },
+          data: { isCompletionColumn: false },
+        });
+        await logAudit(tx, {
+          userId,
+          action: 'column.completion_cleared',
+          entityType: 'kanban_column',
+          entityId: columnId,
+          detail: { name: result.name },
+        });
       }
-
-      return result;
-    });
-  } catch (err) {
-    // Narrow catch: only the unique-constraint violation on the partial index
-    // above, raised by Prisma as P2002 when two concurrent designations race.
-    // Any other error (including other P2002s, which cannot occur on this model)
-    // must propagate unchanged.
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-      throw new ApiError(
-        409,
-        'COMPLETION_COLUMN_CONFLICT',
-        'Another completion-column designation is in progress for this project; retry',
-      );
     }
-    throw err;
-  }
+
+    return result;
+  });
 
   publishEvent({ type: 'columns.changed', projectId, entityId: columnId });
   return updated;
+}
+
+// True only for a P2002 raised specifically by the partial unique index
+// `kanban_columns_projectId_completion_key`. Postgres reports the violated
+// index/constraint name via `err.meta.target`, as either a string or a string
+// array depending on Prisma/engine version, so both shapes are checked. If the
+// shape is ever something else entirely, we still fall back to true -- the
+// caller only ever invokes this from inside the two statements that are
+// capable of violating that specific index, so any P2002 reaching it is, by
+// construction, this conflict.
+function isCompletionIndexConflict(err: unknown): boolean {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') return false;
+  const target = err.meta?.target;
+  const indexName = 'kanban_columns_projectId_completion_key';
+  if (typeof target === 'string') return target.includes(indexName);
+  if (Array.isArray(target)) return target.includes(indexName);
+  return true;
 }
 
 export async function reorderColumns(userId: string, projectId: string, orderedIds: string[]) {

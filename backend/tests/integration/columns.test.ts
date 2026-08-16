@@ -237,15 +237,46 @@ describe('kanban columns', () => {
 
     // Neither request should blow up with an unmapped 500 -- either it succeeds
     // (200) or it loses the race and is told to retry (409 COMPLETION_COLUMN_CONFLICT).
+    let successCount = 0;
     for (const r of results) {
       if (r.status === 'fulfilled') {
         expect([200, 409]).toContain(r.value.status);
+        if (r.value.status === 200) successCount++;
       }
     }
+    // At least one of the two must have actually won the race and been designated --
+    // otherwise a `designated.length === 1` check below could be satisfied by both
+    // requests spuriously failing, which is not the property this test guards.
+    expect(successCount).toBeGreaterThanOrEqual(1);
 
     const after = (await getColumns()) as unknown as { isCompletionColumn: boolean }[];
     const designated = after.filter((c) => c.isCompletionColumn);
-    expect(designated.length).toBeLessThanOrEqual(1);
+    // Exactly one, not merely "at most one" -- zero would also (wrongly) satisfy a
+    // <= 1 check if both requests spuriously failed instead of one losing the race.
+    expect(designated).toHaveLength(1);
+  });
+
+  // Deterministic half of the T018 tripwire. The concurrency test above is
+  // behavioral/probabilistic: its soundness depends on the two HTTP requests
+  // actually achieving concurrent DB-level execution, which this test environment
+  // does not guarantee. If PostgreSQL happened to fully serialize the two
+  // transactions, the app-level clear-then-set alone would satisfy the assertion
+  // above even with the partial unique index dropped, and the test would pass for
+  // the wrong reason. This test instead queries the Postgres system catalog
+  // directly and asserts the index `kanban_columns_projectId_completion_key`
+  // exists and is still a *partial* unique index (not just any unique index) --
+  // so both a full drop and a regeneration into a plain, non-partial unique index
+  // (e.g. from a future `prisma migrate dev` expressing this as `@@unique` in
+  // schema.prisma) fail this test unmistakably. Both halves must stay.
+  it('T018b: the partial unique index kanban_columns_projectId_completion_key exists and is still partial', async () => {
+    const rows = await prisma.$queryRaw<{ indexdef: string }[]>`
+      SELECT indexdef FROM pg_indexes
+      WHERE tablename = 'kanban_columns'
+        AND indexname = 'kanban_columns_projectId_completion_key'
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].indexdef).toContain('UNIQUE');
+    expect(rows[0].indexdef).toMatch(/WHERE.*"isCompletionColumn"/);
   });
 
   // T019 (FR-005, FR-006): designation survives rename and reorder; dies with the column.
