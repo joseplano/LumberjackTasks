@@ -28,8 +28,8 @@ describe('buildBranchUrl', () => {
     );
   });
 
-  it('handles the combined .git suffix and trailing slash', () => {
-    expect(buildBranchUrl('  https://github.com/owner/repo/  ', 'main')).toBe(
+  it('strips a trailing .git suffix and trailing slash together, in that order', () => {
+    expect(buildBranchUrl('https://github.com/owner/repo.git/', 'main')).toBe(
       'https://github.com/owner/repo/tree/main'
     );
   });
