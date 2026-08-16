@@ -29,6 +29,23 @@ describe('tickets', () => {
     expect(a.body.columnId).toBe(cols.body[0].id);
   });
 
+  it('never leaves a ticket with a null columnId on ordinary create or update paths', async () => {
+    // data-model.md central invariant: no ordinary create or update path can
+    // leave a ticket with a null columnId. The sweep (a later phase) is the
+    // only thing allowed to null it out.
+    const created = await createTicket({ name: 'Invariant', complexity: 3 });
+    expect(created.status).toBe(201);
+    expect(created.body.columnId).not.toBeNull();
+    expect(typeof created.body.columnId).toBe('string');
+
+    const updateAttempt = await request(app)
+      .patch(`/api/v1/tickets/${created.body.id}`)
+      .set(auth)
+      .send({ columnId: null });
+    expect(updateAttempt.status).toBe(400);
+    expect(updateAttempt.body.error.code).toBe('VALIDATION');
+  });
+
   it('rejects invalid complexity', async () => {
     const res = await createTicket({ name: 'Bad', complexity: 4 });
     expect(res.status).toBe(400);

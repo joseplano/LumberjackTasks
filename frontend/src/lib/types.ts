@@ -13,6 +13,7 @@ export interface KanbanColumn {
   projectId: string;
   name: string;
   position: number;
+  isCompletionColumn: boolean;
 }
 
 export interface Label {
@@ -43,7 +44,7 @@ export interface Ticket {
   parentTicketId: string | null;
   name: string;
   description: string;
-  columnId: string;
+  columnId: string | null;
   complexity: number;
   labelId: string | null;
   phaseId: string | null;

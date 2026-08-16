@@ -33,7 +33,7 @@ function toItem(t: TicketRow, subtasks: BacklogItem[] = []): BacklogItem {
     description: t.description,
     complexity: t.complexity,
     parentTicketId: t.parentTicketId,
-    status: t.column.name,
+    status: t.column?.name ?? '',
     label: t.label?.name ?? null,
     subtasks,
   };

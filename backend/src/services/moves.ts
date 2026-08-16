@@ -26,13 +26,20 @@ export async function moveTicket(
       throw new ApiError(400, 'LLM_REQUIRED', 'llmName is required when tokens are consumed');
     }
 
+    // ticket.columnId is null for a completed/off-board ticket (no ticket can
+    // reach that state yet in this phase — the sweep does not exist). When it
+    // is null there is no current column to look up; that is not an error.
     const [current, target] = await Promise.all([
-      tx.kanbanColumn.findUnique({ where: { id: ticket.columnId } }),
+      ticket.columnId
+        ? tx.kanbanColumn.findUnique({ where: { id: ticket.columnId } })
+        : Promise.resolve(null),
       tx.kanbanColumn.findFirst({
         where: { id: input.targetColumnId, projectId: ticket.projectId },
       }),
     ]);
-    if (!current) throw new ApiError(500, 'INTERNAL', 'Ticket column missing');
+    if (ticket.columnId && !current) {
+      throw new ApiError(500, 'INTERNAL', 'Ticket column missing');
+    }
     if (!target) {
       throw new ApiError(400, 'VALIDATION', 'targetColumnId does not belong to this project');
     }
@@ -44,8 +51,8 @@ export async function moveTicket(
       });
       validateParentMove(
         target.position,
-        current.position,
-        subs.map((s) => s.column.position),
+        current?.position ?? null,
+        subs.map((s) => s.column?.position ?? null),
       );
     }
 
@@ -61,7 +68,7 @@ export async function moveTicket(
     await tx.ticketStatusHistory.create({
       data: {
         ticketId,
-        fromColumnName: current.name,
+        fromColumnName: current?.name ?? '',
         toColumnName: target.name,
         changedByUserId: userId,
         tokensDelta: tokensDelta || null,
@@ -73,7 +80,7 @@ export async function moveTicket(
       action: 'ticket.moved',
       entityType: 'ticket',
       entityId: ticketId,
-      detail: { from: current.name, to: target.name, tokensDelta, timeDelta },
+      detail: { from: current?.name ?? '', to: target.name, tokensDelta, timeDelta },
     });
     return updated;
   });
