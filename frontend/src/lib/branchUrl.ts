@@ -76,7 +76,15 @@ export function buildBranchUrl(gitRepoUrl: string, branch: string): string | nul
 
   for (const forge of FORGE_SHAPES) {
     if (forge.domains.some((domain) => matchesDomain(url.hostname, domain))) {
-      return forge.shape(repo, branch);
+      try {
+        return forge.shape(repo, branch);
+      } catch {
+        // A branch string that cannot be percent-encoded (e.g. a lone UTF-16
+        // surrogate) has no valid URL representation. Per contract, `null`
+        // signals the caller to fall back to the branch name (FR-004) —
+        // never throw, never emit a partial/unencoded URL.
+        return null;
+      }
     }
   }
 

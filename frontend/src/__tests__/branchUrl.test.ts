@@ -149,4 +149,19 @@ describe('buildBranchUrl', () => {
   it('returns null for a whitespace-only branch', () => {
     expect(buildBranchUrl('https://github.com/owner/repo', '   ')).toBeNull();
   });
+
+  // --- Fix round 1 (T009 review finding): totality under encoding failure ---
+
+  it('returns null rather than throwing for a lone surrogate branch on an Azure DevOps URL', () => {
+    expect(() =>
+      buildBranchUrl('https://dev.azure.com/org/proj/_git/repo', '\uD800')
+    ).not.toThrow();
+    expect(buildBranchUrl('https://dev.azure.com/org/proj/_git/repo', '\uD800')).toBeNull();
+  });
+
+  it('matches the host case-insensitively and preserves the original casing of the repo address', () => {
+    expect(buildBranchUrl('HTTPS://GitHub.COM/owner/repo', 'main')).toBe(
+      'HTTPS://GitHub.COM/owner/repo/tree/main'
+    );
+  });
 });
