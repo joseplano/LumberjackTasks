@@ -32,6 +32,7 @@ and the **marketplace** that publishes the plugin.
 - [Install the plugin](#install-the-plugin)
 - [Opt a repo in](#opt-a-repo-in)
 - [Completion columns & automatic sweep](#completion-columns--automatic-sweep)
+- [Git branch on a ticket](#git-branch-on-a-ticket)
 - [Configuration](#configuration)
 - [Architecture](#architecture)
 - [🔒 Security](#-security)
@@ -137,6 +138,28 @@ A few implementation notes for anyone driving the API directly:
   landing in a now-swept completion column, not an error.
 - A sweep emits one `board.swept` live-update event, so any board already open elsewhere reflects
   the emptied columns without a manual refresh.
+
+## Git branch on a ticket
+
+A ticket shows **the git branch the agent reported** while working on it. It is a mirror of what
+the agent saw in the repository, and it is **read-only in the UI**: the branch block in the ticket
+detail cannot be edited, and neither the create nor the edit form has a branch field. Nothing on
+the board invents or derives the value, and it is never rewritten for display — the only writer is
+the agent, through the `branch` field of the ticket-writing MCP tools (`create_ticket`,
+`update_ticket`, `create_subticket` and `update_subticket`). The backend stores the reported name
+as it was given, apart from trimming surrounding whitespace.
+
+- The ticket detail shows a highlighted block under the title with a branch icon, the branch in a
+  monospaced typeface and a copy button. Board cards carry the same value as a compact chip;
+  cards without one carry nothing.
+- **Subtickets inherit their parent's branch** while they have none of their own, shown with a
+  muted `(heredada de #<parent number>)` marker. As soon as the agent reports a branch on the
+  subticket itself, its own value is shown and the marker disappears.
+- `Sin rama aún` means the agent has not reported a branch for that ticket (nor, for a subticket,
+  for its parent). In that state no branch-like text is shown anywhere for the ticket.
+
+Reporting a branch changes nothing else: no total, count or duration in any report or metric is
+derived from it.
 
 ## Configuration
 

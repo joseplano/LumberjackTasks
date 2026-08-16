@@ -316,6 +316,173 @@ describe('ticket tools', () => {
     await close();
   });
 
+  // T032 (contracts/mcp-tools.md "Behavioural expectations"): the branch is a
+  // pass-through. This layer forwards what the agent reported and relays what
+  // the backend resolved -- it never generates, validates or inherits a branch
+  // name. Doing any of that here would make mcp/ a second source of truth,
+  // violating Constitution Principle I.
+  it('T032: create_ticket forwards branch in the POST body', async () => {
+    const calls = stubBackendFetch(() => ({ status: 201, body: { id: 't1', number: 1 } }));
+    const { client, close } = await connectClient();
+    const result = await client.callTool({
+      name: 'create_ticket',
+      arguments: {
+        projectId: 'p1',
+        name: 'Do it',
+        complexity: 3,
+        branch: '002-ticket-git-branch-view',
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(calls[0].url.pathname).toBe('/api/v1/projects/p1/tickets');
+    expect(calls[0].init.method).toBe('POST');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({
+      name: 'Do it',
+      complexity: 3,
+      branch: '002-ticket-git-branch-view',
+    });
+    await close();
+  });
+
+  it('T032: update_ticket forwards branch in the PATCH body', async () => {
+    const calls = stubBackendFetch(() => ({ status: 200, body: { id: 't1' } }));
+    const { client, close } = await connectClient();
+    const result = await client.callTool({
+      name: 'update_ticket',
+      arguments: { ticketId: 't1', branch: 'feature/xyz' },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(calls[0].url.pathname).toBe('/api/v1/tickets/t1');
+    expect(calls[0].init.method).toBe('PATCH');
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ branch: 'feature/xyz' });
+    await close();
+  });
+
+  it('T032: create_subticket and update_subticket forward branch too', async () => {
+    const calls = stubBackendFetch(() => ({ status: 200, body: { id: 't2' } }));
+    const { client, close } = await connectClient();
+    const created = await client.callTool({
+      name: 'create_subticket',
+      arguments: {
+        projectId: 'p1',
+        parentTicketId: 't1',
+        name: 'Sub',
+        complexity: 1,
+        branch: 'feature/xyz',
+      },
+    });
+    const updated = await client.callTool({
+      name: 'update_subticket',
+      arguments: { subticketId: 't2', branch: 'feature/other' },
+    });
+    expect(created.isError).toBeFalsy();
+    expect(updated.isError).toBeFalsy();
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({
+      parentTicketId: 't1',
+      name: 'Sub',
+      complexity: 1,
+      branch: 'feature/xyz',
+    });
+    expect(JSON.parse(String(calls[1].init.body))).toEqual({ branch: 'feature/other' });
+    await close();
+  });
+
+  it('T032: branch accepts null to clear, and omitting it sends no branch key at all', async () => {
+    const calls = stubBackendFetch(() => ({ status: 200, body: { id: 't1' } }));
+    const { client, close } = await connectClient();
+    await client.callTool({
+      name: 'update_ticket',
+      arguments: { ticketId: 't1', branch: null },
+    });
+    await client.callTool({
+      name: 'update_ticket',
+      arguments: { ticketId: 't1', name: 'Renamed' },
+    });
+    await client.callTool({
+      name: 'update_subticket',
+      arguments: { subticketId: 't2', name: 'Renamed sub' },
+    });
+    await client.callTool({
+      name: 'create_ticket',
+      arguments: { projectId: 'p1', name: 'No branch', complexity: 3 },
+    });
+    // null is an explicit "clear it"...
+    const cleared = JSON.parse(String(calls[0].init.body));
+    expect(cleared).toEqual({ branch: null });
+    expect(Object.keys(cleared)).toContain('branch');
+    // ...while absent must stay absent: the backend reads absent as "leave
+    // alone" and null as "clear", so absent must never become null.
+    for (const call of calls.slice(1)) {
+      expect(Object.keys(JSON.parse(String(call.init.body)))).not.toContain('branch');
+    }
+    await close();
+  });
+
+  it('T032: a ticket read relays gitBranch, effectiveBranch and branchSource unmodified', async () => {
+    const backendResponse = [
+      {
+        id: 't1',
+        number: 1,
+        gitBranch: '002-ticket-git-branch-view',
+        effectiveBranch: '002-ticket-git-branch-view',
+        branchSource: 'own',
+      },
+      {
+        id: 't2',
+        number: 2,
+        gitBranch: null,
+        effectiveBranch: '002-ticket-git-branch-view',
+        branchSource: 'inherited',
+      },
+      { id: 't3', number: 3, gitBranch: null, effectiveBranch: null, branchSource: null },
+    ];
+    stubBackendFetch(() => ({ status: 200, body: backendResponse }));
+    const { client, close } = await connectClient();
+    const result = await client.callTool({
+      name: 'list_tickets',
+      arguments: { projectId: 'p1' },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(textOf(result)).toBe(JSON.stringify(backendResponse, null, 2));
+    expect(JSON.parse(textOf(result))).toEqual(backendResponse);
+    await close();
+  });
+
+  it('T032: a backend 400 VALIDATION for a malformed branch surfaces as a tool error', async () => {
+    const calls = stubBackendFetch(() => ({
+      status: 400,
+      body: {
+        error: { code: 'VALIDATION', message: 'branch is not a valid git ref name' },
+      },
+    }));
+    const { client, close } = await connectClient();
+    const result = await client.callTool({
+      name: 'update_ticket',
+      arguments: { ticketId: 't1', branch: 'bad branch..name' },
+    });
+    // the malformed value reaches the backend -- mcp does not validate it here
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ branch: 'bad branch..name' });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toBe('VALIDATION (HTTP 400): branch is not a valid git ref name');
+    await close();
+  });
+
+  it('T032: move_ticket and move_subticket reject branch -- reporting a branch is an update, not a move', async () => {
+    const calls = stubBackendFetch(() => ({ status: 200, body: { id: 't1', columnId: 'c2' } }));
+    const { client, close } = await connectClient();
+    await client.callTool({
+      name: 'move_ticket',
+      arguments: { ticketId: 't1', targetColumnId: 'c2', branch: 'feature/xyz' },
+    });
+    await client.callTool({
+      name: 'move_subticket',
+      arguments: { subticketId: 't2', targetColumnId: 'c2', branch: 'feature/xyz' },
+    });
+    expect(Object.keys(JSON.parse(String(calls[0].init.body)))).not.toContain('branch');
+    expect(Object.keys(JSON.parse(String(calls[1].init.body)))).not.toContain('branch');
+    await close();
+  });
+
   it('T049a: list_tickets composes placement with parent, and rejects an invalid placement at the schema level', async () => {
     const calls = stubBackendFetch(() => ({ status: 200, body: [] }));
     const { client, close } = await connectClient();

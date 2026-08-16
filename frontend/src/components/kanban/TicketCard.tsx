@@ -39,6 +39,15 @@ export default function TicketCard({
         {ticket.tokensConsumed > 0 && <span>{ticket.tokensConsumed.toLocaleString()} tok</span>}
         {ticket.developmentTimeMinutes > 0 && <span>{formatMinutes(ticket.developmentTimeMinutes)}</span>}
         {subticketCount > 0 && <span>{subticketCount} subtickets</span>}
+        {ticket.effectiveBranch && (
+          <span
+            data-testid="branch-chip"
+            title={ticket.effectiveBranch}
+            className="max-w-[10rem] truncate rounded bg-surface-2 px-1.5 font-mono text-fg-muted"
+          >
+            {ticket.effectiveBranch}
+          </span>
+        )}
       </div>
     </div>
   );

@@ -1,11 +1,26 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
 import { formatMinutes } from '@/lib/format';
 import type { ProjectDetail, TicketDetail } from '@/lib/types';
 import TicketFormModal from './TicketFormModal';
 import ConfirmDialog from './ConfirmDialog';
+
+/**
+ * FR-019 — the inherited-branch marker. The parent's number arrives through the modal's existing
+ * auxiliary, failure-tolerant parent lookup, so it may legitimately be unknown: while that lookup
+ * is still in flight, or after it failed. In that case the marker degrades to `(heredada)` rather
+ * than rendering `#null`, `#undefined` or a blank number. The branch value itself is never
+ * withheld for this reason (spec Edge Case "Parent number unavailable...", SC-003).
+ *
+ * The Spanish literals are deliberate and approved verbatim (spec A-001).
+ */
+function inheritedMarker(parentNumber: number | null): string {
+  return typeof parentNumber === 'number' && Number.isFinite(parentNumber)
+    ? `(heredada de #${parentNumber})`
+    : '(heredada)';
+}
 
 export default function TicketDetailModal({
   ticketId,
@@ -25,11 +40,14 @@ export default function TicketDetailModal({
   const [subOpen, setSubOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async () => {
     setDetail(null);
     setError(null);
     setParentNumber(null);
+    setCopied(false);
     try {
       const d = await api<TicketDetail>(`/tickets/${currentId}`);
       setDetail(d);
@@ -50,6 +68,60 @@ export default function TicketDetailModal({
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(
+    () => () => {
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    },
+    [],
+  );
+
+  function confirmCopied() {
+    setCopied(true);
+    if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => setCopied(false), 2000);
+  }
+
+  /**
+   * Non-secure-context fallback (FR-021): behind a plain-HTTP LAN reverse proxy
+   * `navigator.clipboard` is undefined, so copy through a hidden textarea instead.
+   */
+  function copyWithTextarea(text: string) {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.top = '-1000px';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    try {
+      textarea.select();
+      return document.execCommand('copy');
+    } finally {
+      document.body.removeChild(textarea);
+    }
+  }
+
+  /** Copies the exact effective branch — no trimming, no decoration, no inheritance marker. */
+  async function copyBranch(branch: string) {
+    let done = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(branch);
+        done = true;
+      }
+    } catch {
+      done = false;
+    }
+    if (!done) {
+      try {
+        done = copyWithTextarea(branch) !== false;
+      } catch {
+        done = false;
+      }
+    }
+    if (done) confirmCopied();
+  }
 
   async function confirmDelete() {
     if (!detail) return;
@@ -89,6 +161,55 @@ export default function TicketDetailModal({
                 Parent: #{parentNumber ?? '…'} (view)
               </button>
             )}
+            {/* Reported git branch — read-only mirror of what the agent reported (FR-017). */}
+            <div className="mt-3 flex items-center gap-2 rounded-omarchy border border-border bg-surface-2 px-3 py-2">
+              {detail.effectiveBranch ? (
+                <>
+                  <svg
+                    role="img"
+                    aria-label="Git branch"
+                    viewBox="0 0 24 24"
+                    className="h-4 w-4 shrink-0 text-fg-muted"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <title>Git branch</title>
+                    <circle cx="6" cy="5" r="2.5" />
+                    <circle cx="6" cy="19" r="2.5" />
+                    <circle cx="18" cy="9" r="2.5" />
+                    <path d="M6 7.5v9" />
+                    <path d="M18 11.5c0 3-3 4.5-6 5" />
+                  </svg>
+                  <span className="min-w-0 flex-1 break-all font-mono text-sm text-fg">
+                    {detail.effectiveBranch}
+                  </span>
+                  {detail.branchSource === 'inherited' && (
+                    <span className="shrink-0 text-xs text-fg-muted">
+                      {inheritedMarker(parentNumber)}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => copyBranch(detail.effectiveBranch!)}
+                    aria-label="Copy branch name"
+                    title="Copy branch name"
+                    className="shrink-0 rounded-omarchy border border-border bg-surface px-2 py-1 text-xs text-fg hover:border-accent"
+                  >
+                    Copy
+                  </button>
+                  {copied && (
+                    <span role="status" className="shrink-0 text-xs text-fg-muted">
+                      Copiado
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="text-sm text-fg-muted">Sin rama aún</span>
+              )}
+            </div>
             <p className="mt-2 whitespace-pre-wrap text-sm text-fg">{detail.description}</p>
             <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
               <dt className="text-fg-muted">Status</dt>

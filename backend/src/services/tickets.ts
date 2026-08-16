@@ -3,7 +3,7 @@ import { ApiError } from '../middleware/errors';
 import { getProject } from './projects';
 import { logAudit } from './audit';
 import { publishEvent } from './events';
-import { validateTicketData, aggregateTotals } from './ticketRules';
+import { validateTicketData, aggregateTotals, normalizeBranch, deriveBranch } from './ticketRules';
 import { asOptionalInt } from '../utils/params';
 
 export interface TicketInput {
@@ -17,6 +17,20 @@ export interface TicketInput {
   tokensConsumed?: number;
   llmName?: string | null;
   developmentTimeMinutes?: number;
+  // T017 (FR-005, FR-006): the reported branch. Absent leaves the stored value
+  // alone; null (or an empty/whitespace-only string) clears it.
+  branch?: string | null;
+}
+
+// T018/T018a (FR-015, FR-015a): consume the loaded parent relation to derive
+// the read-only pair, then drop it -- a `parent` object in the payload would be
+// a fourth added field (contracts/rest-api.md). The remainder is spread so no
+// pre-existing field can be lost (FR-016, SC-009).
+function withDerivedBranch<
+  T extends { gitBranch: string | null; parent?: { gitBranch: string | null } | null },
+>(ticket: T) {
+  const { parent, ...rest } = ticket;
+  return { ...rest, ...deriveBranch(ticket.gitBranch, parent?.gitBranch) };
 }
 
 export async function getTicketOr404(ticketId: string) {
@@ -73,6 +87,10 @@ export async function createTicket(userId: string, projectId: string, data: Tick
     developmentTimeMinutes: data.developmentTimeMinutes ?? 0,
     llmName: data.llmName ?? null,
   });
+  // T017 (FR-010): validated before the write transaction is entered, so a
+  // rejected branch can never have touched a row. On create an absent field is
+  // simply stored as null.
+  const gitBranch = normalizeBranch(data.branch ?? null);
   await validateRelations(projectId, data, data.parentTicketId ?? null);
 
   let columnId = data.columnId;
@@ -105,6 +123,7 @@ export async function createTicket(userId: string, projectId: string, data: Tick
         tokensConsumed: data.tokensConsumed ?? 0,
         llmName: data.llmName ?? null,
         developmentTimeMinutes: data.developmentTimeMinutes ?? 0,
+        gitBranch,
       },
     });
     await logAudit(tx, {
@@ -131,7 +150,7 @@ export async function listTickets(projectId: string, parent?: string, placement?
   if (placement !== undefined && !PLACEMENTS.includes(placement as Placement)) {
     throw new ApiError(400, 'VALIDATION', `placement must be one of ${PLACEMENTS.join(', ')}`);
   }
-  return prisma.ticket.findMany({
+  const tickets = await prisma.ticket.findMany({
     where: {
       projectId,
       ...(parent === 'none' ? { parentTicketId: null } : parent ? { parentTicketId: parent } : {}),
@@ -141,9 +160,12 @@ export async function listTickets(projectId: string, parent?: string, placement?
           ? { columnId: null }
           : {}),
     },
-    include: { label: true, column: true },
+    // T018 (research.md R2): one batched relation load for the whole page, not
+    // one query per row.
+    include: { label: true, column: true, parent: { select: { gitBranch: true, number: true } } },
     orderBy: { number: 'asc' },
   });
+  return tickets.map(withDerivedBranch);
 }
 
 export async function getTicketDetail(ticketId: string) {
@@ -154,10 +176,20 @@ export async function getTicketDetail(ticketId: string) {
       column: true,
       subtickets: { include: { label: true, column: true }, orderBy: { number: 'asc' } },
       history: { orderBy: { changedAt: 'asc' } },
+      parent: { select: { gitBranch: true, number: true } },
     },
   });
   if (!ticket) throw new ApiError(404, 'NOT_FOUND', 'Ticket not found');
-  return { ...ticket, totals: aggregateTotals(ticket, ticket.subtickets) };
+  return {
+    ...withDerivedBranch(ticket),
+    // T018a: a subticket nests one level only, so the enclosing ticket IS its
+    // parent -- its `gitBranch` is the parent value, with no extra query.
+    subtickets: ticket.subtickets.map((s) => ({
+      ...s,
+      ...deriveBranch(s.gitBranch, ticket.gitBranch),
+    })),
+    totals: aggregateTotals(ticket, ticket.subtickets),
+  };
 }
 
 export async function updateTicket(userId: string, ticketId: string, data: TicketInput) {
@@ -180,6 +212,11 @@ export async function updateTicket(userId: string, ticketId: string, data: Ticke
     llmName: data.llmName === undefined ? current.llmName : data.llmName,
   };
   validateTicketData(merged);
+  // T017 (FR-006, FR-010): `undefined` in means the field was absent and the
+  // stored value is left alone; `null` or an empty/whitespace-only string
+  // clears it. Validation happens before the write transaction, so a rejected
+  // branch leaves the previously stored value intact.
+  const gitBranch = normalizeBranch(data.branch);
   await validateRelations(
     current.projectId,
     { labelId: data.labelId ?? undefined, phaseId: data.phaseId ?? undefined },
@@ -195,6 +232,10 @@ export async function updateTicket(userId: string, ticketId: string, data: Ticke
         labelId: data.labelId === undefined ? undefined : data.labelId,
         phaseId: data.phaseId === undefined ? undefined : data.phaseId,
         ...merged,
+        // After the spread on purpose: the validated branch must win over any
+        // key `merged` might ever gain, rather than depending on key ordering.
+        // `undefined` still means "absent", so Prisma skips the column.
+        gitBranch,
       },
     });
     await logAudit(tx, {

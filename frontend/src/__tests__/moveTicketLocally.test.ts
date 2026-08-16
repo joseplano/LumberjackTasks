@@ -16,6 +16,9 @@ const ticket = (id: string, columnId: string): Ticket => ({
   tokensConsumed: 0,
   llmName: null,
   developmentTimeMinutes: 0,
+  gitBranch: null,
+  effectiveBranch: null,
+  branchSource: null,
   createdAt: '',
   updatedAt: '',
 });
