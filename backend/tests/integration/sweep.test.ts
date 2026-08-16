@@ -292,4 +292,57 @@ describe('board sweep (US2): atomicity, concurrency, integrity and the delete ra
       expect(detail.ticketCount).toBe(ids.length);
     });
   });
+
+  // T052 (spec Edge Cases: "Restoring a completed ticket directly into the
+  // completion column"): a deliberate, derived consequence of FR-008 +
+  // FR-009 + FR-017, not a bug to special-case away.
+  describe('T052: restoring a completed ticket directly into the completion column', () => {
+    it('on an otherwise empty board, the restore is itself swept again immediately', async () => {
+      const t1 = await createTicket({ name: 'T1', complexity: 1 });
+
+      const firstSweep = await move(t1.id, { targetColumnId: cols[4].id });
+      expect(firstSweep.body.sweep).not.toBeNull();
+
+      // Restore straight back into the completion column. It is the only
+      // ticket on the board, so FR-008/FR-009 require the condition to be
+      // (re-)evaluated on this move, and FR-017 forbids opting a restore out
+      // of that evaluation -- so it must sweep again immediately.
+      const restoreIntoCompletion = await move(t1.id, { targetColumnId: cols[4].id });
+      expect(restoreIntoCompletion.status).toBe(200);
+      expect(restoreIntoCompletion.body.sweep).not.toBeNull();
+      expect(restoreIntoCompletion.body.columnId).toBeNull(); // off the board again
+
+      const sweptAudits = await prisma.auditLog.findMany({
+        where: { entityId: projectId, action: 'board.swept' },
+      });
+      expect(sweptAudits).toHaveLength(2); // a second board.swept audit entry exists
+
+      // Both the restore and the re-sweep appear in the ticket's status
+      // history.
+      const history = await prisma.ticketStatusHistory.findMany({
+        where: { ticketId: t1.id },
+        orderBy: { changedAt: 'asc' },
+      });
+      expect(history).toHaveLength(4);
+      // [0] TODO -> Done (first move, triggers the first sweep)
+      // [1] Done -> Completed (first sweep's exit row)
+      // [2] Completed -> Done (the restore, straight into the completion column)
+      // [3] Done -> Completed (the second sweep's exit row)
+      expect(history[2]).toMatchObject({ fromColumnName: 'Completed', toColumnName: 'Done' });
+      expect(history[3]).toMatchObject({ fromColumnName: 'Done', toColumnName: 'Completed' });
+    });
+
+    it('restoring into any other column leaves the ticket on the board normally', async () => {
+      const t1 = await createTicket({ name: 'T1', complexity: 1 });
+      await move(t1.id, { targetColumnId: cols[4].id }); // sweeps immediately (single ticket)
+
+      const restore = await move(t1.id, { targetColumnId: cols[0].id });
+      expect(restore.status).toBe(200);
+      expect(restore.body.sweep).toBeNull();
+      expect(restore.body.columnId).toBe(cols[0].id);
+
+      const dbT1 = await prisma.ticket.findUnique({ where: { id: t1.id } });
+      expect(dbT1!.columnId).toBe(cols[0].id);
+    });
+  });
 });

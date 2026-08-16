@@ -83,10 +83,16 @@ export async function moveTicket(
         llmName,
       },
     });
+    // current is null exactly when ticket.columnId was null going in -- i.e.
+    // this move is a restore of a completed ticket (T053, FR-023). There is
+    // no other path that leaves current null: a truthy ticket.columnId with
+    // no matching column already threw ApiError above. Record the
+    // human-readable 'Completed' as the origin rather than the empty string.
+    const fromColumnName = current ? current.name : 'Completed';
     await tx.ticketStatusHistory.create({
       data: {
         ticketId,
-        fromColumnName: current?.name ?? '',
+        fromColumnName,
         toColumnName: target.name,
         changedByUserId: userId,
         tokensDelta: tokensDelta || null,
@@ -98,7 +104,7 @@ export async function moveTicket(
       action: 'ticket.moved',
       entityType: 'ticket',
       entityId: ticketId,
-      detail: { from: current?.name ?? '', to: target.name, tokensDelta, timeDelta },
+      detail: { from: fromColumnName, to: target.name, tokensDelta, timeDelta },
     });
 
     // T035 (FR-008, FR-012, FR-014): evaluate/perform the sweep inside this

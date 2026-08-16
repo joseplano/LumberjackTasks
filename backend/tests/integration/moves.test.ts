@@ -288,4 +288,72 @@ describe('ticket movement', () => {
       expect(sweepHistoryRows.map((r) => r.ticketId).sort()).toEqual([t1.id, t2.id, t3.id].sort());
     });
   });
+
+  // --- US4: restoring a completed ticket (T050, T051) ---
+  describe('restoring a completed ticket', () => {
+    // T050 (FR-023, FR-024)
+    it('T050: restores a completed ticket onto the board, it counts toward the sweep condition again, and the restore is recorded with fromColumnName "Completed"', async () => {
+      await setCompletion(cols[4].id, true); // 'Done'
+      const t1 = await createTicket({ name: 'T1', complexity: 1 });
+
+      const swept = await move(t1.id, { targetColumnId: cols[4].id });
+      expect(swept.body.sweep).not.toBeNull();
+      const dbBefore = await prisma.ticket.findUnique({ where: { id: t1.id } });
+      expect(dbBefore!.columnId).toBeNull();
+
+      // Restore into an ordinary column: an ordinary, unremarkable move.
+      const restore = await move(t1.id, { targetColumnId: cols[0].id });
+      expect(restore.status).toBe(200);
+      expect(restore.body.columnId).toBe(cols[0].id);
+      expect(restore.body.sweep).toBeNull();
+
+      const history = await prisma.ticketStatusHistory.findMany({
+        where: { ticketId: t1.id },
+        orderBy: { changedAt: 'asc' },
+      });
+      // [0] TODO -> Done (the move that triggered the sweep)
+      // [1] Done -> Completed (the sweep's own exit row)
+      // [2] Completed -> TODO (the restore)
+      expect(history).toHaveLength(3);
+      expect(history[2]).toMatchObject({ fromColumnName: 'Completed', toColumnName: 'TODO' });
+
+      // It counts toward the sweep condition again: a second ticket entering
+      // the completion column must NOT sweep while the restored t1 sits
+      // elsewhere on the board.
+      const t2 = await createTicket({ name: 'T2', complexity: 1 });
+      const t2move = await move(t2.id, { targetColumnId: cols[4].id });
+      expect(t2move.body.sweep).toBeNull();
+
+      // Only once t1 also reaches the completion column does the board sweep.
+      const t1move2 = await move(t1.id, { targetColumnId: cols[4].id });
+      expect(t1move2.body.sweep).not.toBeNull();
+      expect(t1move2.body.sweep.ticketIds.sort()).toEqual([t1.id, t2.id].sort());
+    });
+
+    // T051 (FR-011a)
+    it('T051: restoring a parent while its subtickets remain completed is allowed -- completed ranks after every column', async () => {
+      await setCompletion(cols[4].id, true); // 'Done'
+      const parent = await createTicket({ name: 'P', complexity: 5 });
+      const sub = await createTicket({ name: 'S', complexity: 1, parentTicketId: parent.id });
+
+      await move(sub.id, { targetColumnId: cols[4].id });
+      const parentSweep = await move(parent.id, { targetColumnId: cols[4].id });
+      expect(parentSweep.body.sweep).not.toBeNull();
+
+      const dbParentBefore = await prisma.ticket.findUnique({ where: { id: parent.id } });
+      const dbSubBefore = await prisma.ticket.findUnique({ where: { id: sub.id } });
+      expect(dbParentBefore!.columnId).toBeNull();
+      expect(dbSubBefore!.columnId).toBeNull();
+
+      // Restore only the parent. The subticket stays completed (off-board,
+      // ranked after every real column), so this is a backward move for the
+      // parent relative to the subticket and must be allowed unconditionally.
+      const restore = await move(parent.id, { targetColumnId: cols[0].id });
+      expect(restore.status).toBe(200);
+      expect(restore.body.columnId).toBe(cols[0].id);
+
+      const dbSubAfter = await prisma.ticket.findUnique({ where: { id: sub.id } });
+      expect(dbSubAfter!.columnId).toBeNull(); // subticket is untouched, still completed
+    });
+  });
 });

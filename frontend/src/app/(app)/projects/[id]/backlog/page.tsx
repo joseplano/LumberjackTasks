@@ -15,10 +15,14 @@ function TicketRow({
   item,
   depth,
   onOpen,
+  restoreColumnId,
+  onRestore,
 }: {
   item: BacklogItem;
   depth: number;
   onOpen: (id: string) => void;
+  restoreColumnId: string | undefined;
+  onRestore: (id: string, targetColumnId: string) => void;
 }) {
   return (
     <tr onClick={() => onOpen(item.id)} className="cursor-pointer border-b border-border hover:bg-surface-2">
@@ -34,6 +38,17 @@ function TicketRow({
           </span>
         ) : (
           item.status
+        )}
+        {item.completed && restoreColumnId && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onRestore(item.id, restoreColumnId);
+            }}
+            className="ml-2 text-accent hover:underline"
+          >
+            Restore
+          </button>
         )}
       </td>
       <td className="p-2">{item.label ?? '—'}</td>
@@ -83,6 +98,26 @@ export default function BacklogPage() {
   }, [load]);
 
   useLiveEvents(id, load);
+
+  // T055 (FR-023): reuses the existing move endpoint -- no new endpoint --
+  // restoring into the project's first (lowest-position) column, the same
+  // ordinary destination a brand-new ticket would land in.
+  const restoreColumnId = project?.columns.length
+    ? [...project.columns].sort((a, b) => a.position - b.position)[0].id
+    : undefined;
+
+  async function restoreTicket(ticketId: string, targetColumnId: string) {
+    try {
+      await api(`/tickets/${ticketId}/move`, {
+        method: 'POST',
+        body: { targetColumnId },
+      });
+      setError(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to restore ticket');
+    }
+  }
 
   function toggleSort(key: SortKey) {
     if (sortBy === key) {
@@ -141,9 +176,23 @@ export default function BacklogPage() {
               </tr>
               {!collapsed &&
                 group.tickets.flatMap((t) => [
-                  <TicketRow key={t.id} item={t} depth={0} onOpen={setOpenTicketId} />,
+                  <TicketRow
+                    key={t.id}
+                    item={t}
+                    depth={0}
+                    onOpen={setOpenTicketId}
+                    restoreColumnId={restoreColumnId}
+                    onRestore={restoreTicket}
+                  />,
                   ...t.subtasks.map((s) => (
-                    <TicketRow key={s.id} item={s} depth={1} onOpen={setOpenTicketId} />
+                    <TicketRow
+                      key={s.id}
+                      item={s}
+                      depth={1}
+                      onOpen={setOpenTicketId}
+                      restoreColumnId={restoreColumnId}
+                      onRestore={restoreTicket}
+                    />
                   )),
                 ])}
             </tbody>

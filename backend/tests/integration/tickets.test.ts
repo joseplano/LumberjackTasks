@@ -436,4 +436,36 @@ describe('tickets', () => {
       expect(completedSubs.body.map((t: { id: string }) => t.id)).toEqual([s1.body.id]);
     });
   });
+
+  // T054 (FR-025): a project's previous sweeps must have no effect on newly
+  // created tickets -- creation always places a new ticket on the board,
+  // however many times the project has been swept before.
+  it('T054: creation still places new tickets on the board after the project has already been swept', async () => {
+    const colsRes = await request(app).get(`/api/v1/projects/${projectId}/columns`).set(auth);
+    const cols = colsRes.body as { id: string; name: string }[];
+    await request(app)
+      .patch(`/api/v1/projects/${projectId}/columns/${cols[4].id}`)
+      .set(auth)
+      .send({ isCompletionColumn: true })
+      .expect(200);
+
+    // Sweep the board twice in a row, via the real move endpoint -- not a
+    // direct DB write -- so the project genuinely carries sweep history.
+    for (let cycle = 0; cycle < 2; cycle++) {
+      const t = await createTicket({ name: `Cycle${cycle}`, complexity: 1 });
+      const moved = await request(app)
+        .post(`/api/v1/tickets/${t.body.id}/move`)
+        .set(auth)
+        .send({ targetColumnId: cols[4].id });
+      expect(moved.body.sweep).not.toBeNull();
+    }
+
+    const created = await createTicket({ name: 'AfterSweeps', complexity: 1 });
+    expect(created.status).toBe(201);
+    expect(created.body.columnId).not.toBeNull();
+    expect(created.body.columnId).toBe(cols[0].id);
+
+    const db = await prisma.ticket.findUnique({ where: { id: created.body.id } });
+    expect(db!.columnId).toBe(cols[0].id);
+  });
 });

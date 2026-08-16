@@ -19,7 +19,10 @@ const project = {
   gitRepoUrl: '',
   createdAt: '',
   updatedAt: '',
-  columns: [],
+  columns: [
+    { id: 'c1', projectId: 'p1', name: 'TODO', position: 0, isCompletionColumn: false },
+    { id: 'c2', projectId: 'p1', name: 'Done', position: 1, isCompletionColumn: true },
+  ],
   labels: [],
   phases: [],
 };
@@ -232,6 +235,28 @@ describe('BacklogPage', () => {
     expect(api).toHaveBeenLastCalledWith(
       '/projects/p1/backlog?sortBy=id&order=asc&page=2&pageSize=50',
     );
+  });
+
+  it('T055: shows a restore affordance only for a completed ticket, and restoring reuses the move endpoint', async () => {
+    render(<BacklogPage />);
+    await screen.findByText('Setup CI');
+
+    // Only the completed ticket (Setup CI) gets a Restore affordance; the
+    // on-board ticket (Login endpoint) and its subtask do not.
+    const restoreButtons = screen.getAllByRole('button', { name: /restore/i });
+    expect(restoreButtons).toHaveLength(1);
+
+    await userEvent.click(restoreButtons[0]);
+
+    // Reuses the existing move endpoint -- no new endpoint -- targeting the
+    // project's first column.
+    expect(api).toHaveBeenCalledWith('/tickets/t9/move', {
+      method: 'POST',
+      body: { targetColumnId: 'c1' },
+    });
+
+    // Clicking Restore must not also open the ticket detail modal.
+    expect(api).not.toHaveBeenCalledWith('/tickets/t9');
   });
 
   it('collapses a group to hide its tickets, and restores them when expanded again', async () => {
