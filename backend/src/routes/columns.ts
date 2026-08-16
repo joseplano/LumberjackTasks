@@ -2,11 +2,11 @@ import { Router, type Request } from 'express';
 import {
   listColumns,
   createColumn,
-  renameColumn,
+  updateColumn,
   reorderColumns,
   deleteColumn,
 } from '../services/columns';
-import { asOptionalString } from '../utils/params';
+import { asOptionalString, asOptionalBoolean } from '../utils/params';
 
 type ProjectParams = { projectId: string };
 type ColumnParams = { projectId: string; columnId: string };
@@ -27,7 +27,10 @@ router.put('/order', async (req: Request<ProjectParams>, res) => {
 
 router.patch('/:columnId', async (req: Request<ColumnParams>, res) => {
   res.json(
-    await renameColumn(req.user!.sub, req.params.projectId, req.params.columnId, req.body?.name),
+    await updateColumn(req.user!.sub, req.params.projectId, req.params.columnId, {
+      name: asOptionalString(req.body?.name, 'name'),
+      isCompletionColumn: asOptionalBoolean(req.body?.isCompletionColumn, 'isCompletionColumn'),
+    }),
   );
 });
 

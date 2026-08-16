@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '../db';
 import { ApiError } from '../middleware/errors';
 import { getProject } from './projects';
@@ -40,30 +41,100 @@ export async function createColumn(userId: string, projectId: string, name?: str
   return created;
 }
 
-export async function renameColumn(
+export async function updateColumn(
   userId: string,
   projectId: string,
   columnId: string,
-  name?: string,
+  input: { name?: string; isCompletionColumn?: boolean },
 ) {
+  const { name, isCompletionColumn } = input;
+  if (name === undefined && isCompletionColumn === undefined) {
+    throw new ApiError(400, 'VALIDATION', 'name or isCompletionColumn is required');
+  }
   const column = await getColumnOr404(projectId, columnId);
-  if (!name?.trim()) throw new ApiError(400, 'VALIDATION', 'name is required');
-  const renamed = await prisma.$transaction(async (tx) => {
-    const updated = await tx.kanbanColumn.update({
-      where: { id: columnId },
-      data: { name: name.trim() },
+  if (name !== undefined && !name.trim()) {
+    throw new ApiError(400, 'VALIDATION', 'name is required');
+  }
+
+  let updated;
+  try {
+    updated = await prisma.$transaction(async (tx) => {
+      let result = column;
+
+      if (name !== undefined) {
+        result = await tx.kanbanColumn.update({
+          where: { id: columnId },
+          data: { name: name.trim() },
+        });
+        await logAudit(tx, {
+          userId,
+          action: 'column.renamed',
+          entityType: 'kanban_column',
+          entityId: columnId,
+          detail: { from: column.name, to: result.name },
+        });
+      }
+
+      if (isCompletionColumn !== undefined) {
+        if (isCompletionColumn) {
+          // Mechanism: clear any other designated column of this project first,
+          // then set this one, inside the same transaction as the rename (if any).
+          // Guarantee: the partial unique index
+          // `kanban_columns_projectId_completion_key` (see
+          // backend/prisma/migrations/20260816_completion_column_sweep/migration.sql
+          // and research.md R2) is what actually prevents two designated columns
+          // from ever being visible at once under concurrent requests -- this
+          // clear-then-set alone is not sufficient under READ COMMITTED. Both are
+          // required; do not drop either. See the T018 tripwire test.
+          await tx.kanbanColumn.updateMany({
+            where: { projectId, isCompletionColumn: true, id: { not: columnId } },
+            data: { isCompletionColumn: false },
+          });
+          result = await tx.kanbanColumn.update({
+            where: { id: columnId },
+            data: { isCompletionColumn: true },
+          });
+          await logAudit(tx, {
+            userId,
+            action: 'column.completion_set',
+            entityType: 'kanban_column',
+            entityId: columnId,
+            detail: { name: result.name },
+          });
+        } else {
+          result = await tx.kanbanColumn.update({
+            where: { id: columnId },
+            data: { isCompletionColumn: false },
+          });
+          await logAudit(tx, {
+            userId,
+            action: 'column.completion_cleared',
+            entityType: 'kanban_column',
+            entityId: columnId,
+            detail: { name: result.name },
+          });
+        }
+      }
+
+      return result;
     });
-    await logAudit(tx, {
-      userId,
-      action: 'column.renamed',
-      entityType: 'kanban_column',
-      entityId: columnId,
-      detail: { from: column.name, to: updated.name },
-    });
-    return updated;
-  });
+  } catch (err) {
+    // Narrow catch: only the unique-constraint violation on the partial index
+    // above, raised by Prisma as P2002 when two concurrent designations race.
+    // Any other error (including other P2002s, which cannot occur on this model)
+    // must propagate unchanged.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      throw new ApiError(
+        409,
+        'COMPLETION_COLUMN_CONFLICT',
+        'Another completion-column designation is in progress for this project; retry',
+      );
+    }
+    throw err;
+  }
+
   publishEvent({ type: 'columns.changed', projectId, entityId: columnId });
-  return renamed;
+  return updated;
 }
 
 export async function reorderColumns(userId: string, projectId: string, orderedIds: string[]) {
