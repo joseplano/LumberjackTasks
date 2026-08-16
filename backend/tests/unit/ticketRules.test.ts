@@ -124,8 +124,14 @@ describe('validateParentMove', () => {
   it('allows a completed ticket (null currentPosition) to move to any column', () => {
     // FR-011a: a completed ticket's own position ranks after every column,
     // so restoring it to any column is always a backward move.
-    expect(() => validateParentMove(0, null, [0, 1])).not.toThrow();
-    expect(() => validateParentMove(3, null, [])).not.toThrow();
+    // These cases are non-vacuous: targetPosition > 0 and a subticket
+    // strictly behind it means the pre-fix comparison (`targetPosition <=
+    // currentPosition` with no `?? RANK_OFF_BOARD`, i.e. `5 <= null` ->
+    // `5 <= 0` -> false) would fall through and throw PARENT_MOVE_BLOCKED,
+    // while the fix (`currentRank = currentPosition ?? RANK_OFF_BOARD` ->
+    // Infinity) short-circuits on the backward-move check and never throws.
+    expect(() => validateParentMove(5, null, [1])).not.toThrow();
+    expect(() => validateParentMove(3, null, [2])).not.toThrow();
   });
 });
 
