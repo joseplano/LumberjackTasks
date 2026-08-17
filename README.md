@@ -150,7 +150,9 @@ the agent, through the `branch` field of the ticket-writing MCP tools (`create_t
 as it was given, apart from trimming surrounding whitespace.
 
 - The ticket detail shows a highlighted block under the title with a branch icon, the branch in a
-  monospaced typeface and a copy button. Board cards carry the same value as a compact chip;
+  monospaced typeface and a copy button. The button copies a URL to that branch in the project's
+  repository when one is configured, or the branch name otherwise, and labels itself accordingly
+  (`Copy branch URL` / `Copy branch name`). Board cards carry the same value as a compact chip;
   cards without one carry nothing.
 - **Subtickets inherit their parent's branch** while they have none of their own, shown with a
   muted `(heredada de #<parent number>)` marker. As soon as the agent reports a branch on the

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/api';
+import { buildBranchUrl } from '@/lib/branchUrl';
 import { formatMinutes } from '@/lib/format';
 import type { ProjectDetail, TicketDetail } from '@/lib/types';
 import TicketFormModal from './TicketFormModal';
@@ -102,7 +103,11 @@ export default function TicketDetailModal({
     }
   }
 
-  /** Copies the exact effective branch — no trimming, no decoration, no inheritance marker. */
+  /**
+   * Copies the payload the caller derived — the branch URL when one could be built, otherwise
+   * the exact effective branch (no trimming, no decoration, no inheritance marker). This
+   * function has no opinion on which one it is; that decision is made once by the caller.
+   */
   async function copyBranch(branch: string) {
     let done = false;
     try {
@@ -135,6 +140,11 @@ export default function TicketDetailModal({
       setDeleteOpen(false);
     }
   }
+
+  const branchUrl = detail?.effectiveBranch
+    ? buildBranchUrl(project.gitRepoUrl, detail.effectiveBranch)
+    : null;
+  const copyLabel = branchUrl ? 'Copy branch URL' : 'Copy branch name';
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
@@ -193,9 +203,9 @@ export default function TicketDetailModal({
                   )}
                   <button
                     type="button"
-                    onClick={() => copyBranch(detail.effectiveBranch!)}
-                    aria-label="Copy branch name"
-                    title="Copy branch name"
+                    onClick={() => copyBranch(branchUrl ?? detail.effectiveBranch!)}
+                    aria-label={copyLabel}
+                    title={copyLabel}
                     className="shrink-0 rounded-omarchy border border-border bg-surface px-2 py-1 text-xs text-fg hover:border-accent"
                   >
                     Copy

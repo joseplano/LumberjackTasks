@@ -324,6 +324,100 @@ describe('TicketDetailModal — reported branch', () => {
       }
     }
   });
+
+  // T007 — copying, primary path with a configured gitRepoUrl (FR-001, FR-004, FR-006, SC-004)
+  it('copies the branch URL and names/titles the control "Copy branch URL" when gitRepoUrl is configured', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    setNavigatorClipboard({ writeText });
+    const configuredProject = { ...project, gitRepoUrl: 'https://github.com/owner/repo' };
+
+    render(
+      <TicketDetailModal
+        ticketId="t1"
+        project={configuredProject}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+    await screen.findByText(BRANCH);
+    expect(screen.queryByText('Copiado')).not.toBeInTheDocument();
+
+    const button = screen.getByRole('button', { name: 'Copy branch URL' });
+    expect(button.getAttribute('title')).toBe('Copy branch URL');
+
+    await userEvent.click(button);
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText).toHaveBeenCalledWith(`https://github.com/owner/repo/tree/${BRANCH}`);
+    expect(await screen.findByText('Copiado')).toBeInTheDocument();
+  });
+
+  // T007 — mirror case: gitRepoUrl is empty, control still names/titles itself "Copy branch name"
+  // (FR-004, FR-006, SC-004)
+  it('copies the exact branch text and names/titles the control "Copy branch name" when gitRepoUrl is empty', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    setNavigatorClipboard({ writeText });
+
+    render(
+      <TicketDetailModal ticketId="t1" project={project} onClose={vi.fn()} onChanged={vi.fn()} />,
+    );
+    await screen.findByText(BRANCH);
+
+    const button = screen.getByRole('button', { name: 'Copy branch name' });
+    expect(button.getAttribute('title')).toBe('Copy branch name');
+
+    await userEvent.click(button);
+
+    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText).toHaveBeenCalledWith(BRANCH);
+    expect(await screen.findByText('Copiado')).toBeInTheDocument();
+  });
+
+  // T008 — non-secure-context fallback with a configured gitRepoUrl copies the branch URL
+  // (FR-007, SC-007)
+  it('falls back to a textarea carrying the branch URL when navigator.clipboard is undefined and gitRepoUrl is configured', async () => {
+    setNavigatorClipboard(undefined);
+    const configuredProject = { ...project, gitRepoUrl: 'https://github.com/owner/repo' };
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand');
+    const copiedText: string[] = [];
+    const execCommand = vi.fn((command: string) => {
+      const textarea = document.querySelector('textarea');
+      if (command === 'copy' && textarea) copiedText.push((textarea as HTMLTextAreaElement).value);
+      return true;
+    });
+    Object.defineProperty(document, 'execCommand', {
+      value: execCommand,
+      configurable: true,
+      writable: true,
+    });
+
+    try {
+      render(
+        <TicketDetailModal
+          ticketId="t1"
+          project={configuredProject}
+          onClose={vi.fn()}
+          onChanged={vi.fn()}
+        />,
+      );
+      await screen.findByText(BRANCH);
+
+      const button = screen.getByRole('button', { name: 'Copy branch URL' });
+      await userEvent.click(button);
+
+      expect(execCommand).toHaveBeenCalledWith('copy');
+      expect(copiedText).toEqual([`https://github.com/owner/repo/tree/${BRANCH}`]);
+      expect(await screen.findByText('Copiado')).toBeInTheDocument();
+      // The helper textarea must not linger in the document.
+      expect(document.querySelector('textarea')).toBeNull();
+    } finally {
+      if (originalExecCommand) {
+        Object.defineProperty(document, 'execCommand', originalExecCommand);
+      } else {
+        delete (document as unknown as Record<string, unknown>).execCommand;
+      }
+    }
+  });
 });
 
 /**
