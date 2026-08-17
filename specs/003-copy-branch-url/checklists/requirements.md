@@ -18,7 +18,7 @@
 - [x] Success criteria are measurable — SC-001…SC-007 are stated as counts, byte-for-byte equalities, or "in 100% of cases"
 - [x] Success criteria are technology-agnostic — they describe the clipboard, the accessible name, and "no figure changes", never a module or framework
 - [x] All acceptance scenarios are defined — three prioritised stories, each independently testable, covering the URL path, the fallback path and the stored-URL variants
-- [x] Edge cases are identified — eleven, each traced to the requirement that governs it
+- [x] Edge cases are identified — thirteen, each traced to the requirement that governs it. Two of them were added by the 2026-08-17 rulings: a query string or fragment on a path-shaped forge, and a fragment on Azure DevOps
 - [x] Scope is clearly bounded — the Assumptions section lists what is out of scope (save-time validation, deep links, per-forge configuration, agent-reported branch behaviour)
 - [x] Dependencies and assumptions identified — both inputs are named as already present, and the empty-`gitRepoUrl` state of this very project is called out as expected behaviour rather than a defect
 

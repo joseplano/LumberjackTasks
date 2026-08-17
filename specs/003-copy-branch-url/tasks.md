@@ -61,6 +61,22 @@
 
 ---
 
+## Phase 6: The 2026-08-17 rulings — query and fragment on the stored repository URL
+
+**Purpose**: implement FR-003e, added to the spec by the human partner after T001-T015 had already shipped. Phases 1-5 above are complete and their text is historical — do not edit them. This phase is appended work, and it follows the same TDD order: T016 must be red before T017 is written.
+
+**Why**: post-implementation `speckit-analyze` found SC-001 and FR-003 + FR-005a mutually unsatisfiable for a stored repository URL carrying a query string or a fragment. Evidence: `.specify/bridge/post-implementation-contradiction.md`. **Two** rulings settled it, both recorded in spec §Clarifications, Session 2026-08-17: the first scoped the discard to the path-shaped forges, and the second — after the same failure was verified to reach Azure DevOps through a fragment — made the **fragment** rule universal while leaving the **query** rule forge-scoped. The final rule is one sentence: a fragment is decoration on every forge and is always discarded; a query is decoration on the path-shaped forges and addressing information on Azure DevOps. Normative rules: [contracts/branchUrl.md](./contracts/branchUrl.md) §Stage 1 rules 6a-6c. Stage 2 is unchanged by either ruling.
+
+- [ ] T016 [US1][US3] Extend `frontend/src/__tests__/branchUrl.test.ts` (new cases only — every existing case must survive unmodified) with the query/fragment vectors from [contracts/branchUrl.md](./contracts/branchUrl.md) §Worked examples. For **each** of the three path forges and the unrecognised-host fallback — `https://github.com/owner/repo`, `https://gitlab.com/owner/repo`, `https://bitbucket.org/owner/repo`, `https://git.internal.example/owner/repo` — assert that the stored value with a query (`?tab=readme`, `?ref_type=heads`, `?utm_source=x`), with a fragment (`#readme`), and with both (`?tab=readme#top`) each yield exactly the same URL as the bare address does, in that forge's shape. Add the masked-suffix vector `https://github.com/owner/repo.git?tab=readme` → `https://github.com/owner/repo/tree/main` (rule 6 then rules 3-4, so FR-003b still holds when a query hides the `.git`). Add the **Azure DevOps regression vector** asserting the query exemption is intact: `https://dev.azure.com/org/proj/_git/repo?path=/x` with `main` still yields `https://dev.azure.com/org/proj/_git/repo?path=/x&version=GBmain` — its query is preserved and appended to with `&`, never discarded (FR-003e, FR-005a). Then add the **Azure DevOps fragment vectors** from the second ruling of 2026-08-17, which are the ones that prove the fragment rule is universal rather than path-shaped (contract rule 6a): `https://dev.azure.com/org/proj/_git/repo#readme` with `main` yields `https://dev.azure.com/org/proj/_git/repo?version=GBmain` (the shipped module returns `…/repo#readme?version=GBmain`, which does not open); `https://dev.azure.com/org/proj/_git/repo?path=/x#readme` with `main` yields `https://dev.azure.com/org/proj/_git/repo?path=/x&version=GBmain`, identical to the query-only vector, proving the fragment goes while the query stays; and the legacy hash-routed form `https://org.visualstudio.com/proj/_git/repo#path=/x&version=GBmaster` with `main` yields `https://org.visualstudio.com/proj/_git/repo?version=GBmain` (the shipped module returns `…#path=/x&version=GBmaster?version=GBmain`, which addresses the wrong branch and does not open). Run the file and confirm the new cases fail against the shipped module while every pre-existing case still passes.
+- [ ] T017 [US1][US3] Modify `frontend/src/lib/branchUrl.ts` to implement [contracts/branchUrl.md](./contracts/branchUrl.md) §Stage 1 rules 6a–6c, which are **not** path-shape-only: the fragment is discarded on **every** shape, before the host is matched (rule 6a), and the query is discarded only where the branch goes into a path — GitHub, GitLab, Bitbucket and the unrecognised-host fallback (rule 6b). Concretely: reduce the address to `origin + pathname + search` for every shape, then further to `origin + pathname` for the path shapes only, and re-apply the trailing-`.git` and trailing-`/` removal to what remains in both cases (rule 6c), since a discarded fragment can expose a `.git` the earlier rules could not see. The Azure DevOps branch therefore keeps its query — `&` still appends to it exactly as today, and Stage 2's `?`/`&` selection is unchanged byte-for-byte — but no longer keeps a fragment. Nothing else may change: no new dependency (the platform `URL` object is already constructed for scheme validation), no I/O, no module state, no `any`, the function stays pure and total, and `TicketDetailModal.tsx` is not touched — the caller contract is unchanged. Run T016 until green, then the whole `frontend/src/__tests__/branchUrl.test.ts` and `ticketDetail.test.tsx` to prove no pre-existing case regressed.
+- [ ] T018 Re-run the full gate after T017, in the constitution's exact form: `cd frontend && npm test`, `cd frontend && npx tsc --noEmit`, `cd backend && npm test`, `cd mcp && npm test`, and `node --test plugin/tests/*.test.mjs` (glob form). The T012/T013 figures are the pre-change baseline, not evidence for this phase; record the new counts. Then re-read [checklists/readiness.md](./checklists/readiness.md) and [checklists/technology.md](./checklists/technology.md) once more, as T015 did.
+
+**Checkpoint**: T014 (the manual quickstart walkthrough) is still open and is best run *after* T017, because [quickstart.md](./quickstart.md) §3 now includes the address-bar forms this phase fixes, and §4 now includes both halves of the Azure DevOps rule — the query check that proves the exemption and the fragment checks, including the legacy `visualstudio.com` hash form, that prove the discard is universal.
+
+**Now in this phase**: an Azure DevOps repository URL carrying a *fragment*, which was an open product question when this phase was first written (readiness CHK033). It was ruled on by the human partner on 2026-08-17, is covered by T016's vectors and T017's scope, and CHK033 is now checked. No question about this feature's derivation remains open.
+
+---
+
 ## Dependencies
 
 ```text
@@ -73,26 +89,36 @@ T003 ─┴─> T007 ─> T008 ─────────┘
 - T009 must not start before T004-T006 exist and fail. T010 must not start before T007-T008 exist and fail.
 - T012-T013 are the completion gate; no task may be reported done on their strength before they have actually been run (verification before completion).
 
+Phase 6, appended 2026-08-17:
+
+```text
+T015 ─> T016 ─> T017 ─> T018 ─> T014
+```
+
+- T016 must exist and be red before T017 is written. T018 re-runs the gate T012-T013 defined; its results supersede theirs for the delivered state.
+- T014 stays open throughout and is best run last, once T017 has landed — it is the only step that proves a real browser opens the URL, which is exactly the failure the ruling repairs.
+
 ## Traceability
 
 | Requirement | Tasks |
 |---|---|
 | FR-001 | T007, T010 |
 | FR-002 | T002, T009 |
-| FR-003, FR-003a-c | T004, T009 |
+| FR-003, FR-003a-c | T004, T009; the query/fragment step added to FR-003's ordered list on 2026-08-17 is carried by T016-T017 with the rest of FR-003e |
 | FR-003d | T005, T009 |
+| FR-003e | T016, T017, T018, T014 |
 | FR-004 | T003, T004, T007, T010 |
 | FR-005 | T005, T009 |
-| FR-005a | T006, T009 |
+| FR-005a | T006, T009, T016 (Azure regression vector) |
 | FR-006 | T007, T010 |
 | FR-007 | T008, T010 |
 | FR-008 | T013, T015 |
 | FR-009 | T010, T014 |
 | FR-010 | T011 |
 | FR-011 | T004-T006, T009 |
-| SC-001, SC-002 | T005, T007, T014 |
+| SC-001, SC-002 | T005, T007, T016, T017, T014 |
 | SC-003 | T003, T007 |
 | SC-004 | T007 |
-| SC-005 | T004-T006, T012 |
+| SC-005 | T004-T006, T012, T016, T018 |
 | SC-006 | T013, T015 |
 | SC-007 | T008 |

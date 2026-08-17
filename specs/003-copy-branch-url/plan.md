@@ -28,7 +28,7 @@ The ticket branch block's copy control currently copies the branch name. It will
 
 **Constraints**: no new dependency; no backend, MCP, plugin, database or migration change; the branch text shown to the reader is unchanged; the existing clipboard mechanism and confirmation are unchanged
 
-**Scale/Scope**: one new ~60-line module, one modified component region (the copy handler and the copy button), one new unit test file, additions to one existing component test file, one README sentence
+**Scale/Scope**: one new module holding a single exported function (92 lines as shipped at `cfaa558`, growing modestly with the 2026-08-17 normalisation rules — the count is descriptive, never a budget), one modified component region (the copy handler and the copy button), one new unit test file, additions to one existing component test file, one README sentence
 
 ## Constitution Check
 
@@ -58,7 +58,9 @@ specs/003-copy-branch-url/
 ├── contracts/
 │   └── branchUrl.md     # Phase 1 — the buildBranchUrl contract
 ├── checklists/
-│   └── requirements.md  # Pre-implementation readiness gate
+│   ├── requirements.md  # Specification quality gate
+│   ├── readiness.md     # Pre-implementation readiness gate
+│   └── technology.md    # Technology verification gate (typescript-node)
 └── tasks.md             # Phase 2 — /speckit-tasks output
 ```
 
@@ -98,6 +100,9 @@ Two stages, in order:
 
 1. **Normalise** the stored value to a repository address — trim, SSH-to-https, strip trailing `.git`, strip trailing `/`, and reject anything that is not `http`/`https` (FR-003, FR-003a–c). Rejection is `null`.
 2. **Shape** the branch URL from the host — GitHub/GitLab/Bitbucket/Azure DevOps, with the GitHub shape as the fallback for any other host (FR-003d, FR-005). The branch stays literal in a path segment and is `encodeURIComponent`-encoded in the Azure DevOps query parameter, which is also appended with `&` when the address already carries a query (FR-005a).
+3. **Discard the fragment on every shape**, before the host is matched, and discard the query string as well **only where the shape places the branch in a path** — GitHub, GitLab, Bitbucket and the fallback. In practice: reduce the address to `origin + pathname + search` always, and to `origin + pathname` for the path shapes, re-applying the `.git`/trailing-`/` removal to what remains in both cases (FR-003e, contract §Stage 1 rules 6a-6c). Azure DevOps is exempt from the *query* half only: its query is addressing information, not decoration, and Stage 2 still appends to it with `&`.
+
+Only the query half of step 3 depends on which shape step 2 selected; the fragment half is unconditional. It exists because a repository URL copied from a browser address bar carries `?tab=readme` or `#readme`, and appending the branch after that produces a string no browser resolves — while the control still says `Copy branch URL`. That failure reaches both shapes: on a path shape the branch lands after the `?` or `#`, and on the query shape the `?version=GB…` parameter lands *inside* a fragment, which a browser never sends as a query. This was a post-implementation product contradiction (SC-001 against FR-003/FR-005a), resolved by two rulings from the human partner on 2026-08-17 recorded in spec §Clarifications — the first scoping the query discard to the path shapes, the second making the fragment discard universal after the same failure was verified against the shipped module on Azure DevOps. The evidence that raised it is `.specify/bridge/post-implementation-contradiction.md`.
 
 An empty or whitespace-only `branch` is not a case this function needs to handle for the UI — the block renders no copy control without an effective branch (FR-009) — but the contract still defines it (`null`) so the function is total and the component cannot be surprised.
 
@@ -121,7 +126,7 @@ Nothing else in the block changes: the icon and its `<title>`, the monospaced br
 
 Constitution Principle II requires tests with every behaviour change and the full suite green before a PR.
 
-**Unit — `frontend/src/__tests__/branchUrl.test.ts`** (new). One case per contract row: GitHub, GitLab, Bitbucket, Azure DevOps, unrecognised host; subdomain/self-hosted host matching; SSH form; `.git` suffix; trailing slash; surrounding whitespace; empty string; whitespace-only string; non-URL value; unsupported scheme; branch containing slashes for a path forge and for the query forge; a repository address that already carries a query string; and an empty branch. These cover SC-005 without rendering anything, which is the point of FR-011.
+**Unit — `frontend/src/__tests__/branchUrl.test.ts`** (new). One case per contract row: GitHub, GitLab, Bitbucket, Azure DevOps, unrecognised host; subdomain/self-hosted host matching; SSH form; `.git` suffix; trailing slash; the combined `…/repo.git/`; surrounding whitespace; empty string; whitespace-only string; non-URL value; unsupported scheme; branch containing slashes for a path forge and for the query forge; a repository address that already carries a query string; and an empty branch. Added by the 2026-08-17 rulings: for each of the three path forges and the unrecognised-host fallback, a stored URL carrying a query, one carrying a fragment, one carrying both, and one carrying a query *behind* a `.git` suffix — all four must yield the same URL as the bare address. For Azure DevOps, three vectors that separate the two halves of the rule: `?path=/x` is still preserved and appended to with `&` (the query exemption, a regression guard), `#readme` is discarded like anywhere else, and `?path=/x#readme` yields exactly what `?path=/x` alone yields — plus the legacy `visualstudio.com` hash-routing form, whose stored fragment carries a stale branch selector (FR-003e). These cover SC-005 without rendering anything, which is the point of FR-011.
 
 **Component — `frontend/src/__tests__/ticketDetail.test.tsx`** (extended, existing cases preserved). The existing fixture has `gitRepoUrl: ''`, so the current copy tests keep passing unchanged and stand as the regression guard for FR-004. Added: with a GitHub `gitRepoUrl`, pressing copy writes the branch URL and the accessible name reads `Copy branch URL`; with an empty `gitRepoUrl`, the accessible name reads `Copy branch name`; and the non-secure-context fallback path copies the URL too (FR-007, SC-007).
 

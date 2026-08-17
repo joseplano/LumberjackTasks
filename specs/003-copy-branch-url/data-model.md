@@ -17,6 +17,7 @@
 **Branch URL** — the address of an effective branch inside a project repository.
 
 - **Derivation**: `buildBranchUrl(project.gitRepoUrl, detail.effectiveBranch)`, defined in [contracts/branchUrl.md](./contracts/branchUrl.md).
+- **Which parts of `gitRepoUrl` reach the result**: the scheme, host and path always. The **fragment never does** — it is discarded on every forge without exception. The **query string** is discarded when the branch is placed in a path segment (GitHub, GitLab, Bitbucket, unrecognised host) and **preserved** when the branch is placed in a query parameter (Azure DevOps), where the version parameter is appended to the existing query. Spec FR-003e, ruled on 2026-08-17 in two parts: the query rule first, then the fragment rule made universal. The asymmetry is deliberate and is about the URL *component*, not the forge — a fragment addresses a position within an already-loaded page and never a different repository, whereas Azure DevOps genuinely addresses with its query.
 - **Lifetime**: computed during render and consumed by the copy handler; never stored in state, never persisted, never transmitted.
 - **Cardinality**: at most one per rendered ticket branch block; `null` when the project has no usable repository URL.
 - **Consumers**: exactly two, both in `TicketDetailModal` — the clipboard payload, and the control's `aria-label`/`title`. Both must read the *same* evaluation, which is the invariant behind SC-004.
