@@ -108,6 +108,47 @@ test('the plugin ships with no dependencies — it is copied verbatim onto users
   }
 });
 
+test('the skill reads the branch from the repo and never fabricates one (FR-023, FR-024)', () => {
+  // The ticket's branch field is a mirror of the repo, and this skill is the only
+  // thing that writes it. Every failure mode here is silent: the board keeps
+  // showing "Sin rama aún", or worse, a plausible-looking name nobody ever
+  // checked out. Nothing at runtime would flag either one.
+  assert.match(
+    skill,
+    /git rev-parse --abbrev-ref HEAD/,
+    'SKILL.md must tell the agent to read the branch with `git rev-parse --abbrev-ref HEAD` — any other source is a guess',
+  );
+
+  // move_ticket has no `branch` parameter; instructing the agent to pass it there
+  // would make every report a silently rejected no-op.
+  assert.match(
+    skill,
+    /`branch`[\s\S]{0,200}?update_ticket/,
+    'SKILL.md must report the branch via update_ticket/update_subticket, not move_ticket',
+  );
+
+  // FR-024: a detached HEAD prints the literal "HEAD". Sending that, or the commit
+  // hash, would write a value that is not a branch at all.
+  assert.match(
+    skill,
+    /detached/i,
+    'SKILL.md must cover the detached-HEAD case (FR-024)',
+  );
+  assert.match(
+    skill,
+    /omit `branch`|report \*\*nothing\*\*|report nothing/,
+    'SKILL.md must say that a detached HEAD reports nothing rather than a commit hash',
+  );
+
+  // FR-025 has no code to enforce it — there is no generator to delete. This
+  // instruction is the only thing standing between the mirror and a fabricated name.
+  assert.match(
+    skill,
+    /Never invent, derive, slugify/,
+    'SKILL.md must forbid inventing, deriving or slugifying a branch name (FR-025)',
+  );
+});
+
 test('every script the plugin ships imports only Node built-ins', () => {
   const scripts = readdirSync(join(pluginRoot, 'scripts')).filter((f) => f.endsWith('.mjs'));
   assert.ok(scripts.length > 0, 'expected the plugin to ship scripts');

@@ -468,4 +468,400 @@ describe('tickets', () => {
     const db = await prisma.ticket.findUnique({ where: { id: created.body.id } });
     expect(db!.columnId).toBe(cols[0].id);
   });
+
+  // T015 (FR-005 .. FR-010, contracts/rest-api.md): the write path for the
+  // optional `branch` field on POST /projects/:id/tickets and
+  // PATCH /tickets/:id.
+  describe('branch write path (T015)', () => {
+    it('creates a ticket with a branch and stores the trimmed value', async () => {
+      const res = await createTicket({
+        name: 'WithBranch',
+        complexity: 3,
+        branch: '  002-ticket-git-branch-view  ',
+      });
+      expect(res.status).toBe(201);
+      expect(res.body.gitBranch).toBe('002-ticket-git-branch-view');
+      const db = await prisma.ticket.findUnique({ where: { id: res.body.id } });
+      expect(db!.gitBranch).toBe('002-ticket-git-branch-view');
+    });
+
+    it('creates a ticket without a branch, leaving it null', async () => {
+      const res = await createTicket({ name: 'NoBranch', complexity: 3 });
+      expect(res.status).toBe(201);
+      expect(res.body.gitBranch).toBeNull();
+    });
+
+    it('updates a ticket with a branch', async () => {
+      const t = await createTicket({ name: 'T', complexity: 3 });
+      const res = await request(app)
+        .patch(`/api/v1/tickets/${t.body.id}`)
+        .set(auth)
+        .send({ branch: 'feature/login' });
+      expect(res.status).toBe(200);
+      expect(res.body.gitBranch).toBe('feature/login');
+      const db = await prisma.ticket.findUnique({ where: { id: t.body.id } });
+      expect(db!.gitBranch).toBe('feature/login');
+    });
+
+    it('leaves the stored branch unchanged when `branch` is omitted (absent is not null)', async () => {
+      const t = await createTicket({ name: 'T', complexity: 3, branch: 'keep/me' });
+      expect(t.body.gitBranch).toBe('keep/me');
+      const res = await request(app)
+        .patch(`/api/v1/tickets/${t.body.id}`)
+        .set(auth)
+        .send({ description: 'unrelated edit' });
+      expect(res.status).toBe(200);
+      expect(res.body.gitBranch).toBe('keep/me');
+      const db = await prisma.ticket.findUnique({ where: { id: t.body.id } });
+      expect(db!.gitBranch).toBe('keep/me');
+    });
+
+    it('clears the stored branch when `branch` is an empty string', async () => {
+      const t = await createTicket({ name: 'T', complexity: 3, branch: 'clear/me' });
+      const res = await request(app)
+        .patch(`/api/v1/tickets/${t.body.id}`)
+        .set(auth)
+        .send({ branch: '' });
+      expect(res.status).toBe(200);
+      expect(res.body.gitBranch).toBeNull();
+      const db = await prisma.ticket.findUnique({ where: { id: t.body.id } });
+      expect(db!.gitBranch).toBeNull();
+    });
+
+    it('clears the stored branch when `branch` is whitespace-only', async () => {
+      const t = await createTicket({ name: 'T', complexity: 3, branch: 'clear/me' });
+      const res = await request(app)
+        .patch(`/api/v1/tickets/${t.body.id}`)
+        .set(auth)
+        .send({ branch: '   ' });
+      expect(res.status).toBe(200);
+      expect(res.body.gitBranch).toBeNull();
+      const db = await prisma.ticket.findUnique({ where: { id: t.body.id } });
+      expect(db!.gitBranch).toBeNull();
+    });
+
+    it('clears the stored branch when `branch` is null', async () => {
+      const t = await createTicket({ name: 'T', complexity: 3, branch: 'clear/me' });
+      const res = await request(app)
+        .patch(`/api/v1/tickets/${t.body.id}`)
+        .set(auth)
+        .send({ branch: null });
+      expect(res.status).toBe(200);
+      expect(res.body.gitBranch).toBeNull();
+      const db = await prisma.ticket.findUnique({ where: { id: t.body.id } });
+      expect(db!.gitBranch).toBeNull();
+    });
+
+    it('rejects a malformed branch on create with 400 VALIDATION and stores nothing', async () => {
+      const res = await createTicket({ name: 'Bad', complexity: 3, branch: 'has spaces' });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION');
+      const rows = await prisma.ticket.findMany({ where: { projectId, name: 'Bad' } });
+      expect(rows).toHaveLength(0);
+    });
+
+    // FR-010: a rejected write leaves any previously stored value intact --
+    // asserted on the stored value, not merely on the status code.
+    it('rejects a malformed branch on update and leaves the previously stored value intact', async () => {
+      const t = await createTicket({ name: 'T', complexity: 3, branch: 'good/branch' });
+      for (const bad of ['has spaces', 'ba~d', 'ba^d', 'ba:d', 'ba?d', 'ba*d', 'ba[d', 'ba\\d', 'a..b', 'a@{b', '/leading', 'trailing/', 'x'.repeat(256), 'thing.lock']) {
+        const res = await request(app)
+          .patch(`/api/v1/tickets/${t.body.id}`)
+          .set(auth)
+          .send({ branch: bad });
+        expect(res.status, `branch ${JSON.stringify(bad)} should be rejected`).toBe(400);
+        expect(res.body.error.code).toBe('VALIDATION');
+        const db = await prisma.ticket.findUnique({ where: { id: t.body.id } });
+        expect(db!.gitBranch, `branch ${JSON.stringify(bad)} must not have touched the row`).toBe(
+          'good/branch',
+        );
+      }
+    });
+
+    // FR-010: the REST endpoint is reachable directly and forwards req.body
+    // unfiltered, so a non-string branch must come back as 400 VALIDATION --
+    // not a 500 -- and must leave the previously stored value intact.
+    it('rejects a non-string branch over HTTP with 400 VALIDATION and leaves the previously stored value intact', async () => {
+      const t = await createTicket({ name: 'T', complexity: 3, branch: 'good/branch' });
+      for (const bad of [42, true, { branch: 'main' }, ['main']]) {
+        const res = await request(app)
+          .patch(`/api/v1/tickets/${t.body.id}`)
+          .set(auth)
+          .send({ branch: bad });
+        expect(res.status, `branch ${JSON.stringify(bad)} should be rejected`).toBe(400);
+        expect(res.body.error.code).toBe('VALIDATION');
+        // Re-read the stored value: the status code alone would not prove the
+        // previous value survived.
+        const db = await prisma.ticket.findUnique({ where: { id: t.body.id } });
+        expect(db!.gitBranch, `branch ${JSON.stringify(bad)} must not have touched the row`).toBe(
+          'good/branch',
+        );
+        const read = await request(app).get(`/api/v1/tickets/${t.body.id}`).set(auth);
+        expect(read.status).toBe(200);
+        expect(read.body.gitBranch).toBe('good/branch');
+      }
+    });
+  });
+
+  // T016 (FR-015, contracts/rest-api.md): both read endpoints carry
+  // gitBranch/effectiveBranch/branchSource on every ticket object.
+  describe('branch read shape (T016)', () => {
+    it('returns the three fields on the detail endpoint and on every subticket', async () => {
+      const parent = await createTicket({ name: 'P', complexity: 8, branch: 'feature/parent' });
+      const own = await createTicket({
+        name: 'SubOwn',
+        complexity: 1,
+        parentTicketId: parent.body.id,
+        branch: 'feature/own',
+      });
+      const inherited = await createTicket({
+        name: 'SubInherited',
+        complexity: 1,
+        parentTicketId: parent.body.id,
+      });
+
+      const detail = await request(app).get(`/api/v1/tickets/${parent.body.id}`).set(auth);
+      expect(detail.status).toBe(200);
+      expect(detail.body.gitBranch).toBe('feature/parent');
+      expect(detail.body.effectiveBranch).toBe('feature/parent');
+      expect(detail.body.branchSource).toBe('own');
+
+      expect(detail.body.subtickets).toHaveLength(2);
+      for (const sub of detail.body.subtickets as Record<string, unknown>[]) {
+        expect(sub).toHaveProperty('gitBranch');
+        expect(sub).toHaveProperty('effectiveBranch');
+        expect(sub).toHaveProperty('branchSource');
+      }
+      const ownSub = (detail.body.subtickets as { id: string }[]).find((s) => s.id === own.body.id)!;
+      expect(ownSub).toMatchObject({
+        gitBranch: 'feature/own',
+        effectiveBranch: 'feature/own',
+        branchSource: 'own',
+      });
+      const inheritedSub = (detail.body.subtickets as { id: string }[]).find(
+        (s) => s.id === inherited.body.id,
+      )!;
+      expect(inheritedSub).toMatchObject({
+        gitBranch: null,
+        effectiveBranch: 'feature/parent',
+        branchSource: 'inherited',
+      });
+    });
+
+    it('returns null/null/null on the detail endpoint when no branch exists anywhere', async () => {
+      const parent = await createTicket({ name: 'P', complexity: 3 });
+      await createTicket({ name: 'S', complexity: 1, parentTicketId: parent.body.id });
+      const detail = await request(app).get(`/api/v1/tickets/${parent.body.id}`).set(auth);
+      expect(detail.body).toMatchObject({
+        gitBranch: null,
+        effectiveBranch: null,
+        branchSource: null,
+      });
+      expect(detail.body.subtickets[0]).toMatchObject({
+        gitBranch: null,
+        effectiveBranch: null,
+        branchSource: null,
+      });
+    });
+
+    it('returns the three fields on every element of the list endpoint', async () => {
+      const parent = await createTicket({ name: 'P', complexity: 8, branch: 'feature/parent' });
+      const inherited = await createTicket({
+        name: 'SubInherited',
+        complexity: 1,
+        parentTicketId: parent.body.id,
+      });
+      const own = await createTicket({
+        name: 'SubOwn',
+        complexity: 1,
+        parentTicketId: parent.body.id,
+        branch: 'feature/own',
+      });
+      const bare = await createTicket({ name: 'Bare', complexity: 1 });
+
+      const list = await request(app).get(`/api/v1/projects/${projectId}/tickets`).set(auth);
+      expect(list.status).toBe(200);
+      expect(list.body).toHaveLength(4);
+      for (const t of list.body as Record<string, unknown>[]) {
+        expect(t).toHaveProperty('gitBranch');
+        expect(t).toHaveProperty('effectiveBranch');
+        expect(t).toHaveProperty('branchSource');
+      }
+      const byId = Object.fromEntries(
+        (list.body as { id: string }[]).map((t) => [t.id, t as Record<string, unknown>]),
+      );
+      expect(byId[parent.body.id]).toMatchObject({
+        gitBranch: 'feature/parent',
+        effectiveBranch: 'feature/parent',
+        branchSource: 'own',
+      });
+      expect(byId[inherited.body.id]).toMatchObject({
+        gitBranch: null,
+        effectiveBranch: 'feature/parent',
+        branchSource: 'inherited',
+      });
+      expect(byId[own.body.id]).toMatchObject({
+        gitBranch: 'feature/own',
+        effectiveBranch: 'feature/own',
+        branchSource: 'own',
+      });
+      expect(byId[bare.body.id]).toMatchObject({
+        gitBranch: null,
+        effectiveBranch: null,
+        branchSource: null,
+      });
+    });
+
+    // The parent row itself is absent when parent=<id> narrows the list, but
+    // the derived pair is still correct because the parent is resolved
+    // through the relation, not through the response.
+    it('still derives inheritance when the parent filter excludes the parent row', async () => {
+      const parent = await createTicket({ name: 'P', complexity: 8, branch: 'feature/parent' });
+      await createTicket({ name: 'S', complexity: 1, parentTicketId: parent.body.id });
+      const subs = await request(app)
+        .get(`/api/v1/projects/${projectId}/tickets?parent=${parent.body.id}`)
+        .set(auth);
+      expect(subs.status).toBe(200);
+      expect(subs.body).toHaveLength(1);
+      expect(subs.body[0]).toMatchObject({
+        gitBranch: null,
+        effectiveBranch: 'feature/parent',
+        branchSource: 'inherited',
+      });
+    });
+  });
+
+  // T039 (US2, FR-013, FR-014, SC-003, SC-004): the full inheritance matrix
+  // exercised over HTTP. T016 proved the three fields are *present*; this
+  // block value-asserts the derivation itself, and specifically on a
+  // SUBTICKET'S OWN detail endpoint `GET /api/v1/tickets/:subticketId` -- the
+  // surface the detail modal actually loads when a person opens a subticket.
+  // Inheritance is a single hop (spec A-003): one level of nesting is already
+  // enforced, so there is no recursion, no cycle and no depth to test.
+  describe('branch inheritance matrix (T039)', () => {
+    it('parent with a branch → subticket without one inherits it on its OWN detail endpoint', async () => {
+      const parent = await createTicket({ name: 'P', complexity: 8, branch: 'feature/parent' });
+      const sub = await createTicket({
+        name: 'S',
+        complexity: 1,
+        parentTicketId: parent.body.id,
+      });
+
+      const subDetail = await request(app).get(`/api/v1/tickets/${sub.body.id}`).set(auth);
+      expect(subDetail.status).toBe(200);
+      expect(subDetail.body.id).toBe(sub.body.id);
+      expect(subDetail.body.parentTicketId).toBe(parent.body.id);
+      expect(subDetail.body.gitBranch).toBeNull();
+      expect(subDetail.body.effectiveBranch).toBe('feature/parent');
+      expect(subDetail.body.branchSource).toBe('inherited');
+    });
+
+    it("subticket with its own branch returns its own value, never the parent's (SC-004)", async () => {
+      const parent = await createTicket({ name: 'P', complexity: 8, branch: 'feature/parent' });
+      const sub = await createTicket({
+        name: 'S',
+        complexity: 1,
+        parentTicketId: parent.body.id,
+        branch: 'feature/own',
+      });
+
+      const subDetail = await request(app).get(`/api/v1/tickets/${sub.body.id}`).set(auth);
+      expect(subDetail.status).toBe(200);
+      expect(subDetail.body.gitBranch).toBe('feature/own');
+      expect(subDetail.body.effectiveBranch).toBe('feature/own');
+      expect(subDetail.body.branchSource).toBe('own');
+      // SC-004 is a negative claim, so assert it as one.
+      expect(subDetail.body.effectiveBranch).not.toBe('feature/parent');
+      expect(subDetail.body.branchSource).not.toBe('inherited');
+    });
+
+    it('parent without a branch → subticket returns all three fields null on its own detail endpoint', async () => {
+      const parent = await createTicket({ name: 'P', complexity: 8 });
+      const sub = await createTicket({
+        name: 'S',
+        complexity: 1,
+        parentTicketId: parent.body.id,
+      });
+
+      const subDetail = await request(app).get(`/api/v1/tickets/${sub.body.id}`).set(auth);
+      expect(subDetail.status).toBe(200);
+      expect(subDetail.body).toMatchObject({
+        gitBranch: null,
+        effectiveBranch: null,
+        branchSource: null,
+      });
+    });
+
+    it("a parent ticket never returns 'inherited' -- with a branch, without one, on detail or list", async () => {
+      const withBranch = await createTicket({ name: 'WithBranch', complexity: 3, branch: 'main' });
+      const withoutBranch = await createTicket({ name: 'WithoutBranch', complexity: 3 });
+      // Give each one a subticket, so a parent that is genuinely above a
+      // branch-carrying child cannot accidentally read its child's value.
+      await createTicket({
+        name: 'ChildOfWith',
+        complexity: 1,
+        parentTicketId: withBranch.body.id,
+      });
+      await createTicket({
+        name: 'ChildOfWithout',
+        complexity: 1,
+        parentTicketId: withoutBranch.body.id,
+        branch: 'feature/child',
+      });
+
+      const withDetail = await request(app).get(`/api/v1/tickets/${withBranch.body.id}`).set(auth);
+      expect(withDetail.status).toBe(200);
+      expect(withDetail.body).toMatchObject({
+        gitBranch: 'main',
+        effectiveBranch: 'main',
+        branchSource: 'own',
+      });
+
+      const withoutDetail = await request(app)
+        .get(`/api/v1/tickets/${withoutBranch.body.id}`)
+        .set(auth);
+      expect(withoutDetail.status).toBe(200);
+      // A child's branch must never travel upwards.
+      expect(withoutDetail.body).toMatchObject({
+        gitBranch: null,
+        effectiveBranch: null,
+        branchSource: null,
+      });
+
+      const list = await request(app).get(`/api/v1/projects/${projectId}/tickets`).set(auth);
+      expect(list.status).toBe(200);
+      const topLevel = (list.body as { parentTicketId: string | null; branchSource: unknown }[])
+        .filter((t) => t.parentTicketId === null);
+      expect(topLevel).toHaveLength(2);
+      for (const t of topLevel) {
+        expect(t.branchSource).not.toBe('inherited');
+      }
+    });
+  });
+
+  // T016a (FR-015a, contracts/rest-api.md): the parent relation is loaded to
+  // compute the derived pair and must be dropped, not serialized. A `parent`
+  // object in the response would be a fourth added field.
+  describe('branch read shape drops the parent relation (T016a)', () => {
+    it('never exposes a `parent` key on either read response', async () => {
+      const parent = await createTicket({ name: 'P', complexity: 8, branch: 'feature/parent' });
+      await createTicket({ name: 'S', complexity: 1, parentTicketId: parent.body.id });
+
+      const list = await request(app).get(`/api/v1/projects/${projectId}/tickets`).set(auth);
+      expect(list.status).toBe(200);
+      expect(list.body).toHaveLength(2);
+      for (const t of list.body as Record<string, unknown>[]) {
+        expect(t).not.toHaveProperty('parent');
+      }
+
+      for (const id of [parent.body.id, (list.body as { id: string }[])[1].id]) {
+        const detail = await request(app).get(`/api/v1/tickets/${id}`).set(auth);
+        expect(detail.status).toBe(200);
+        expect(detail.body).not.toHaveProperty('parent');
+        for (const sub of (detail.body.subtickets ?? []) as Record<string, unknown>[]) {
+          expect(sub).not.toHaveProperty('parent');
+        }
+      }
+    });
+  });
 });

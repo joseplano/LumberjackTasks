@@ -18,6 +18,13 @@ const ticketFields = {
     .nullable()
     .optional()
     .describe('Phase id for a top-level ticket, or null to clear. Rejected on subtickets.'),
+  branch: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "The git branch this ticket is being worked on. Report the repository's actual current branch (git rev-parse --abbrev-ref HEAD); never invent or derive a name. Empty string or null clears it. Subtickets inherit the parent's branch when they have none of their own.",
+    ),
 };
 
 const complexity = z
@@ -88,7 +95,7 @@ export function registerTicketTools(server: McpServer) {
     {
       title: 'Update ticket',
       description:
-        'Update ticket fields (name, description, complexity, label, tokens, LLM, time). Use move_ticket to change column.',
+        'Update ticket fields (name, description, complexity, label, tokens, LLM, time, branch). Use move_ticket to change column.',
       inputSchema: {
         ticketId: z.string(),
         name: z.string().optional(),
@@ -142,7 +149,7 @@ export function registerTicketTools(server: McpServer) {
     {
       title: 'Update subticket',
       description:
-        'Update subticket fields (name, description, complexity, label, tokens, LLM, time).',
+        'Update subticket fields (name, description, complexity, label, tokens, LLM, time, branch).',
       inputSchema: {
         subticketId: z.string(),
         name: z.string().optional(),

@@ -140,6 +140,9 @@ describe('TicketFormModal', () => {
       tokensConsumed: 10,
       llmName: 'claude',
       developmentTimeMinutes: 5,
+      gitBranch: null,
+      effectiveBranch: null,
+      branchSource: null,
       createdAt: '',
       updatedAt: '',
     };
@@ -199,6 +202,9 @@ describe('TicketFormModal', () => {
       tokensConsumed: 10,
       llmName: 'claude',
       developmentTimeMinutes: 5,
+      gitBranch: null,
+      effectiveBranch: null,
+      branchSource: null,
       createdAt: '',
       updatedAt: '',
     };
@@ -248,6 +254,9 @@ describe('TicketFormModal', () => {
       tokensConsumed: 0,
       llmName: null,
       developmentTimeMinutes: 0,
+      gitBranch: null,
+      effectiveBranch: null,
+      branchSource: null,
       createdAt: '',
       updatedAt: '',
     };

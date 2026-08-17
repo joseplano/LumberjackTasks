@@ -51,6 +51,9 @@ export interface Ticket {
   tokensConsumed: number;
   llmName: string | null;
   developmentTimeMinutes: number;
+  gitBranch: string | null;
+  effectiveBranch: string | null;
+  branchSource: 'own' | 'inherited' | null;
   createdAt: string;
   updatedAt: string;
   label?: Label | null;

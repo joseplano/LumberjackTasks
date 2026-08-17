@@ -56,6 +56,9 @@ The Lumberjack Tasks system is the source of truth for work in this repo. Every 
    - Register `timeDelta` (minutes actually spent) on moves, and **real token usage**: the SessionStart context gives you the exact token command for this repo (`node "<plugin>/scripts/session-tokens.mjs" --project-dir "<repo>" --consume`). Run it (Bash) right before the move — it returns the exact tokens spent since the last registration plus the `llmName` to pass as `tokensDelta`/`llmName`. Never guess the path: the script lives in the plugin, not in the repo. `--consume` zeroes the checkpoint, so each spend is registered exactly once; when working several tickets in one session, `--consume` at each ticket's registration move keeps the attribution per ticket.
    - For retroactive attribution, run that same command with `--since <ISO> --until <ISO>` instead of `--consume` (reads the transcript for that window; does not touch the checkpoint) and pass the result to `update_ticket`.
    - **Move all subtickets before the parent** — the backend rejects a parent moving ahead of any subticket. (`move_ticket` works for subtickets too; `move_subticket` is equivalent.)
+   - **Report the git branch.** When moving a ticket into "In development", read the repo's current branch with `git rev-parse --abbrev-ref HEAD` (Bash) and pass it as `branch` on the `update_ticket` / `update_subticket` call that accompanies the move — `move_ticket` does not accept `branch`. Re-report it the same way whenever the branch changes during the work.
+     - Report **only what the command printed**. Never invent, derive, slugify or "tidy" a branch name, and never build one from the ticket's title or number.
+     - If the command outputs the literal `HEAD` (detached), report **nothing**: omit `branch` entirely and do not send a commit hash instead.
 
 ## Rules
 
@@ -75,3 +78,4 @@ The Lumberjack Tasks system is the source of truth for work in this repo. Every 
 | Creating the full standard label set upfront | Create only the label(s) the current task needs |
 | Trusting a stale `projectId` from the mapping | Verify with `get_project` before using it |
 | Passing `phaseId` on a subticket | Only top-level tickets carry a phase; subtickets inherit it |
+| Inventing or deriving the branch name from the ticket | Read it from the repo with `git rev-parse --abbrev-ref HEAD` and report it verbatim |

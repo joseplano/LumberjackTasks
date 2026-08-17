@@ -76,6 +76,12 @@ model Ticket {
   tokensConsumed         Int                   @default(0)
   llmName                String?
   developmentTimeMinutes Int                   @default(0)
+  /// Mirror of the branch the agent reported for this ticket. Written only
+  /// through the agent-facing write path; there is no generator and no
+  /// read-time derivation. null means "not reported yet" -- see
+  /// specs/002-ticket-git-branch-view/spec.md FR-002. Deliberately NOT unique:
+  /// one branch commonly hosts several tickets (FR-004).
+  gitBranch              String?
   createdAt              DateTime              @default(now())
   updatedAt              DateTime              @updatedAt
   project                Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
