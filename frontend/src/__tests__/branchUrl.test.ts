@@ -193,4 +193,131 @@ describe('buildBranchUrl', () => {
       'HTTPS://GitHub.COM/owner/repo/tree/main'
     );
   });
+
+  // --- Phase 6: the 2026-08-17 rulings — query and fragment (T016) ---
+  //
+  // Rule 6a: the fragment is decoration on EVERY shape, Azure DevOps included, and is
+  //          always discarded.
+  // Rule 6b: the query is decoration only on the path shapes (github.com, gitlab.com,
+  //          bitbucket.org, unrecognised-host fallback) and is discarded there; on the
+  //          Azure DevOps shape it is addressing information and is preserved (FR-003e).
+  // Rule 6c: after 6a/6b, rules 3 and 4 are re-applied to what remains, because a query
+  //          or a fragment can mask a trailing `.git` or `/` from them.
+  // Every vector below must produce exactly the string the bare address produces.
+
+  // github.com — path shape
+
+  it('rule 6b: discards a query string on the github.com shape', () => {
+    expect(buildBranchUrl('https://github.com/owner/repo?tab=readme', 'main')).toBe(
+      'https://github.com/owner/repo/tree/main'
+    );
+  });
+
+  it('rule 6a: discards a fragment on the github.com shape', () => {
+    expect(buildBranchUrl('https://github.com/owner/repo#readme', 'main')).toBe(
+      'https://github.com/owner/repo/tree/main'
+    );
+  });
+
+  it('rules 6a and 6b: discards a query string and a fragment together on the github.com shape', () => {
+    expect(buildBranchUrl('https://github.com/owner/repo?tab=readme#top', 'main')).toBe(
+      'https://github.com/owner/repo/tree/main'
+    );
+  });
+
+  // gitlab.com — path shape
+
+  it('rule 6b: discards a query string on the gitlab.com shape', () => {
+    expect(buildBranchUrl('https://gitlab.com/owner/repo?ref_type=heads', 'main')).toBe(
+      'https://gitlab.com/owner/repo/-/tree/main'
+    );
+  });
+
+  it('rule 6a: discards a fragment on the gitlab.com shape', () => {
+    expect(buildBranchUrl('https://gitlab.com/owner/repo#readme', 'main')).toBe(
+      'https://gitlab.com/owner/repo/-/tree/main'
+    );
+  });
+
+  it('rules 6a and 6b: discards a query string and a fragment together on the gitlab.com shape', () => {
+    expect(buildBranchUrl('https://gitlab.com/owner/repo?ref_type=heads#top', 'main')).toBe(
+      'https://gitlab.com/owner/repo/-/tree/main'
+    );
+  });
+
+  // bitbucket.org — path shape
+
+  it('rule 6b: discards a query string on the bitbucket.org shape', () => {
+    expect(buildBranchUrl('https://bitbucket.org/owner/repo?utm_source=x', 'main')).toBe(
+      'https://bitbucket.org/owner/repo/src/main'
+    );
+  });
+
+  it('rule 6a: discards a fragment on the bitbucket.org shape', () => {
+    expect(buildBranchUrl('https://bitbucket.org/owner/repo#readme', 'main')).toBe(
+      'https://bitbucket.org/owner/repo/src/main'
+    );
+  });
+
+  it('rules 6a and 6b: discards a query string and a fragment together on the bitbucket.org shape', () => {
+    expect(buildBranchUrl('https://bitbucket.org/owner/repo?utm_source=x#top', 'main')).toBe(
+      'https://bitbucket.org/owner/repo/src/main'
+    );
+  });
+
+  // unrecognised host — the fallback is a path shape too
+
+  it('rule 6b: discards a query string on the unrecognised-host fallback shape', () => {
+    expect(buildBranchUrl('https://git.internal.example/owner/repo?utm_source=x', 'main')).toBe(
+      'https://git.internal.example/owner/repo/tree/main'
+    );
+  });
+
+  it('rule 6a: discards a fragment on the unrecognised-host fallback shape', () => {
+    expect(buildBranchUrl('https://git.internal.example/owner/repo#readme', 'main')).toBe(
+      'https://git.internal.example/owner/repo/tree/main'
+    );
+  });
+
+  it('rules 6a and 6b: discards a query string and a fragment together on the unrecognised-host fallback shape', () => {
+    expect(
+      buildBranchUrl('https://git.internal.example/owner/repo?utm_source=x#top', 'main')
+    ).toBe('https://git.internal.example/owner/repo/tree/main');
+  });
+
+  // Masked suffix — 6b discards the query, then 6c re-applies rules 3 and 4
+
+  it('rule 6c: strips a trailing .git that a query string had masked from rules 3 and 4', () => {
+    expect(buildBranchUrl('https://github.com/owner/repo.git?tab=readme', 'main')).toBe(
+      'https://github.com/owner/repo/tree/main'
+    );
+  });
+
+  // Azure DevOps — the query is addressing information and is exempt from 6b (FR-003e)
+
+  it('FR-003e exemption guard: preserves the query string on the Azure DevOps shape and appends with & (rule 6b does not apply)', () => {
+    expect(buildBranchUrl('https://dev.azure.com/org/proj/_git/repo?path=/x', 'main')).toBe(
+      'https://dev.azure.com/org/proj/_git/repo?path=/x&version=GBmain'
+    );
+  });
+
+  // Azure DevOps — the fragment rule is universal, so 6a applies here too (FR-003e, FR-005a)
+
+  it('rule 6a: discards a fragment on the dev.azure.com shape so ?version=GB is not buried inside it', () => {
+    expect(buildBranchUrl('https://dev.azure.com/org/proj/_git/repo#readme', 'main')).toBe(
+      'https://dev.azure.com/org/proj/_git/repo?version=GBmain'
+    );
+  });
+
+  it('rules 6a and 6b: on dev.azure.com the fragment goes and the query stays (FR-003e)', () => {
+    expect(
+      buildBranchUrl('https://dev.azure.com/org/proj/_git/repo?path=/x#readme', 'main')
+    ).toBe('https://dev.azure.com/org/proj/_git/repo?path=/x&version=GBmain');
+  });
+
+  it('rule 6a: discards a legacy visualstudio.com hash route carrying a stale branch selector (FR-005a)', () => {
+    expect(
+      buildBranchUrl('https://org.visualstudio.com/proj/_git/repo#path=/x&version=GBmaster', 'main')
+    ).toBe('https://org.visualstudio.com/proj/_git/repo?version=GBmain');
+  });
 });
