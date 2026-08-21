@@ -315,7 +315,7 @@ US4 5, US5 5, Polish 8 (T065–T072).
 |---|---|
 | `cd backend && npm run build && npm test` | clean; **346 passed** (baseline 282) |
 | `cd mcp && npm run build && npm test` | clean; **93 passed** (baseline 80) |
-| `cd frontend && npm test` | **243 passed** (baseline 183) |
+| `cd frontend && npm test` | **240 passed** (baseline 183) |
 | `cd frontend && npm run build` | clean, zero warnings, `/projects/[id]/repo` generated |
 | `node --test plugin/tests/*.test.mjs` | **21 pass, 0 fail** |
 | `npx prisma validate` | valid |
