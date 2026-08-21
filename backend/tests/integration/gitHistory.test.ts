@@ -10,12 +10,17 @@ let projectId: string;
 /** A syntactically valid 40-lowercase-hex object name derived from a number. */
 const sha = (n: number) => n.toString(16).padStart(40, '0');
 const syncUrl = (id: string) => `/api/v1/projects/${id}/git-history/sync`;
+const historyUrl = (id: string) => `/api/v1/projects/${id}/git-history`;
 
 function sync(body: unknown, id: string = projectId) {
   return request(app)
     .post(syncUrl(id))
     .set(auth)
     .send(body as object);
+}
+
+function list(id: string = projectId) {
+  return request(app).get(historyUrl(id)).set(auth);
 }
 
 async function newProject(name: string) {
@@ -848,6 +853,148 @@ describe('git history', () => {
       expect(res.status).toBe(404);
       expect(res.body.error.code).toBe('NOT_FOUND');
       expect(await prisma.gitBranch.count()).toBe(0);
+    });
+  });
+
+  // T039 / US1, contracts/http-api.md section 1: the read endpoint that feeds the
+  // tree drawing. Everything the tree needs (branches, commits, counts) and
+  // nothing else (no file lists -- research R12).
+  describe('GET / (US1, contracts/http-api.md section 1)', () => {
+    // Rule 2: the never-synced shape is a 200, not a 404. An existing project
+    // with zero GitBranch rows must be distinguishable from an unknown project
+    // (rule 5) and from a transport failure (FR-033) -- so this is asserted on
+    // its own, before any sync has ever happened for this project.
+    it('answers 200 with the never-synced shape for a project that has never been synced', async () => {
+      const res = await list();
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ lastSyncedAt: null, branches: [], commits: [] });
+    });
+
+    // Rule 5, other half: unknown projectId is the 404, so the never-synced 200
+    // above cannot be mistaken for "any id gets a 200".
+    it('returns 404 NOT_FOUND for an unknown projectId (T039)', async () => {
+      const res = await list('11111111-1111-4111-8111-111111111111');
+
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('NOT_FOUND');
+    });
+
+    it('carries lastSyncedAt, branches and commits with exactly the contracted fields', async () => {
+      await sync({
+        branches: [trunk],
+        commits: [validCommit({ sha: sha(1) })],
+      });
+
+      const res = await list();
+      expect(res.status).toBe(200);
+      expect(res.body.branches).toHaveLength(1);
+      expect(res.body.commits).toHaveLength(1);
+
+      // Per-branch fields are exactly: id, name, isTrunk, forkedFromBranchName,
+      // state, lastSyncedAt.
+      expect(Object.keys(res.body.branches[0]).sort()).toEqual(
+        ['id', 'name', 'isTrunk', 'forkedFromBranchName', 'state', 'lastSyncedAt'].sort(),
+      );
+      // Per-commit fields are exactly: sha, branchId, message, authorName,
+      // committedAt, pushed, isMerge, parentShas, fileCount, truncatedFileCount.
+      expect(Object.keys(res.body.commits[0]).sort()).toEqual(
+        [
+          'sha',
+          'branchId',
+          'message',
+          'authorName',
+          'committedAt',
+          'pushed',
+          'isMerge',
+          'parentShas',
+          'fileCount',
+          'truncatedFileCount',
+        ].sort(),
+      );
+      // Negative assertion (contract section 1, "no file lists"): a response
+      // that leaked a `files` array on a commit must fail this test.
+      expect(res.body.commits[0].files).toBeUndefined();
+    });
+
+    // Rule 4: fileCount is the number of STORED file rows; fileCount +
+    // truncatedFileCount is the real total. No file paths travel in this payload.
+    it('reports fileCount as the stored row count and truncatedFileCount as the honest remainder', async () => {
+      await sync({
+        branches: [trunk],
+        commits: [
+          validCommit({
+            sha: sha(1),
+            files: [
+              { path: 'a.ts', changeType: 'A' },
+              { path: 'b.ts', changeType: 'M' },
+            ],
+            truncatedFileCount: 3,
+          }),
+        ],
+      });
+
+      const res = await list();
+      expect(res.status).toBe(200);
+      const commit = res.body.commits.find((c: { sha: string }) => c.sha === sha(1));
+      expect(commit.fileCount).toBe(2);
+      expect(commit.truncatedFileCount).toBe(3);
+      expect(commit.files).toBeUndefined();
+    });
+
+    // Rule 1: lastSyncedAt is the MAXIMUM across the project's branches, not the
+    // first, not the trunk's, not an arbitrary one. Two separate syncs, so the
+    // two branches genuinely differ, prove the endpoint actually takes a max
+    // rather than e.g. always reporting the trunk's or the first-synced branch's.
+    it('derives lastSyncedAt as the maximum across the project branches', async () => {
+      const first = await sync({ branches: [trunk], commits: [] });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const second = await sync({ branches: [feature], commits: [] });
+
+      expect(new Date(second.body.lastSyncedAt).getTime()).toBeGreaterThan(
+        new Date(first.body.lastSyncedAt).getTime(),
+      );
+
+      const res = await list();
+      expect(res.status).toBe(200);
+      expect(res.body.lastSyncedAt).toBe(second.body.lastSyncedAt);
+      // Sanity: the reported max really is the max of the two branch rows, not
+      // coincidentally equal to only one of them by construction.
+      const trunkRow = res.body.branches.find((b: { name: string }) => b.name === trunk.name);
+      const featureRow = res.body.branches.find((b: { name: string }) => b.name === feature.name);
+      expect(trunkRow.lastSyncedAt).toBe(first.body.lastSyncedAt);
+      expect(featureRow.lastSyncedAt).toBe(second.body.lastSyncedAt);
+      expect(res.body.lastSyncedAt).toBe(
+        [trunkRow.lastSyncedAt, featureRow.lastSyncedAt].sort().slice(-1)[0],
+      );
+    });
+
+    // Rule 3: commits ordered by committedAt ascending, ties broken by sha
+    // ascending. Without the tie-break two commits sharing a second would swap
+    // between runs and the geometry function's output would not be assertable
+    // (research R11) -- so the tie is tested explicitly, not just the general
+    // chronological order.
+    it('orders commits by committedAt ascending, ties broken by sha ascending', async () => {
+      const tiedTimestamp = '2026-08-21T19:00:00.000Z';
+      await sync({
+        branches: [trunk],
+        commits: [
+          validCommit({ sha: sha(1), committedAt: '2026-08-21T18:00:00.000Z' }),
+          // Two commits with the IDENTICAL committedAt and different shas, sent
+          // in descending-sha order so a passing test cannot be an accident of
+          // insertion order.
+          validCommit({ sha: sha(9), committedAt: tiedTimestamp }),
+          validCommit({ sha: sha(3), committedAt: tiedTimestamp }),
+        ],
+      });
+
+      const res = await list();
+      expect(res.status).toBe(200);
+      expect(res.body.commits.map((c: { sha: string }) => c.sha)).toEqual([
+        sha(1),
+        sha(3),
+        sha(9),
+      ]);
     });
   });
 });
