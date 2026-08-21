@@ -60,6 +60,56 @@ The Lumberjack Tasks system is the source of truth for work in this repo. Every 
      - Report **only what the command printed**. Never invent, derive, slugify or "tidy" a branch name, and never build one from the ticket's title or number.
      - If the command outputs the literal `HEAD` (detached), report **nothing**: omit `branch` entirely and do not send a commit hash instead.
 
+## Repository history sync
+
+The **View repo** screen draws the repository's branches and commits as an SVG tree. It is fed by
+`sync_git_history`, a mirror tool: it changes nothing in the repository, only records what the
+repository already contains.
+
+- **When to sync.** After committing, and after changing branch. Do this deliberately, as a normal
+  step of the workflow above — never from a hook, since a hook shelling out to git on every tool
+  use is heavy and would fail silently, which this skill's tools never do.
+- **What to run.**
+  - `git branch --format='%(refname:short)'` — the branches to report.
+  - `git branch --merged main --format='%(refname:short)'` — which of them are merged (see state
+    precedence below).
+  - `git status --porcelain` — whether the **currently checked-out** branch's working tree is
+    dirty.
+  - `git log --format='%H|%P|%an|%aI|%s' --name-status <branch>` — commits for one branch, with
+    parent SHAs (`%P`), author, ISO date, subject, and the changed files. `--name-status` emits one
+    of `A`/`M`/`D`/`R` per file, which maps directly to `files[].changeType`.
+  - `git log --all --format='%H|%P|%an|%aI|%s' --name-status` — the one-time backfill (D4): walks
+    every branch's history in one pass instead of one branch at a time.
+- **State precedence — merged is checked first.** For each branch:
+  1. Listed by `git branch --merged main`? → `MERGED`, **even if `git status --porcelain` is
+     non-empty**. Checking `git status` before the merged check gets a merged-and-dirty branch
+     wrong.
+  2. Otherwise, the working tree is dirty (`git status --porcelain` non-empty) **or** the branch
+     has no commit of its own → `UNCOMMITTED`.
+  3. Otherwise → `ACTIVE`.
+  A working tree belongs to whichever branch is checked out, so **only the currently checked-out
+  branch can ever be reported `UNCOMMITTED` from a dirty tree** — every other branch reaches
+  `UNCOMMITTED` only by having no commit of its own. Do not try to ask git whether an un-checked-out
+  branch is dirty; that information does not exist.
+- **Batching.** Send at most 50 commits per `sync_git_history` call. Loop, calling it repeatedly,
+  until the whole history (or the whole backfill) is loaded. A `413 PAYLOAD_TOO_LARGE` means send
+  fewer commits in that call, not fewer files per commit.
+- **First-parent attribution never moves (D8).** A commit belongs to the branch it was introduced
+  on. If a commit's `sha` was already synced under one `branchName`, reporting it again under a
+  different `branchName` will **not** move it — the backend keeps the original attribution and
+  updates every other field. Re-running the backfill after new branches exist is safe for this
+  reason.
+- **The 500-file cap.** Report at most 500 `files` entries per commit; put the remainder in
+  `truncatedFileCount` (0 when the list is complete — never omit it). Sending more than 500 files
+  is rejected outright, not trimmed for you.
+- **Every boolean and `parentShas` are required, always** — `branches[].isTrunk`,
+  `commits[].pushed`, `commits[].isMerge`, and `commits[].parentShas` (`[]` for a root commit).
+  Omitting one is read as new information, not "unchanged", so it can silently overwrite recorded
+  truth on a later sync. Only `forkedFromBranchName`, `ticketIds` and `commits[].files` may be left
+  out.
+- **Tool name.** `mcp__plugin_lumberjack-tasks_lumberjack-tasks__sync_git_history` (load it with
+  ToolSearch if not yet loaded, same as the other tools in this skill).
+
 ## Rules
 
 - A repo with no `.claude/ticket-project.json` has not opted in, and the SessionStart hook stays silent there. Still use this skill when the user asks to track work or runs `/ticket-init` — step 1 resolves or creates the project and writes the mapping.
