@@ -997,4 +997,578 @@ describe('git history', () => {
       ]);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // T050 / T055 / T060 -- the remaining read endpoints, plus the never-synced
+  // regression. Shared fixtures for all three live here, at the body level of
+  // the outer describe, so the nested blocks below can use them.
+  // -------------------------------------------------------------------------
+
+  const commitDetailUrl = (id: string, s: string) =>
+    `/api/v1/projects/${id}/git-history/commits/${s}`;
+  const branchDetailUrl = (id: string, bid: string) =>
+    `/api/v1/projects/${id}/git-history/branches/${bid}`;
+
+  function commitDetail(s: string, id: string = projectId) {
+    return request(app).get(commitDetailUrl(id, s)).set(auth);
+  }
+
+  function branchDetail(bid: string, id: string = projectId) {
+    return request(app).get(branchDetailUrl(id, bid)).set(auth);
+  }
+
+  /** A ticket carrying a reported `gitBranch` (or none). `branch` is the
+   * STORED value the inference in contract section 2 rule 3 matches on. */
+  async function newTicketOn(branch: string | null, name: string, pid: string = projectId) {
+    const res = await request(app)
+      .post(`/api/v1/projects/${pid}/tickets`)
+      .set(auth)
+      .send({ name, complexity: 1, branch });
+    return res.body as { id: string; number: number; name: string };
+  }
+
+  /** The id the sync gave a branch, read back through the tree endpoint --
+   * contract section 3 keys on the id, not the name (research R12). */
+  async function branchIdOf(name: string, pid: string = projectId) {
+    const res = await list(pid);
+    const branch = res.body.branches.find((b: { name: string }) => b.name === name);
+    return branch.id as string;
+  }
+
+  type TicketRef = { id: string; number: number; name: string; source: string };
+  const sourceOf = (tickets: TicketRef[], id: string) => tickets.find((t) => t.id === id)?.source;
+
+  /** FR-025/D9, contract section 2 rule 4: the machine-readable half of "an
+   * inference is never presented as reported data". Applied to EVERY response
+   * that carries tickets, not only to the ones a test is about. */
+  function expectEveryTicketCarriesASource(tickets: TicketRef[]) {
+    for (const ticket of tickets) {
+      expect(Object.keys(ticket).sort()).toEqual(['id', 'name', 'number', 'source']);
+      expect(['reported', 'inferred']).toContain(ticket.source);
+    }
+  }
+
+  // T050 / US3, contracts/http-api.md section 2: one commit's files and tickets.
+  describe('GET /commits/:sha (US3, contracts/http-api.md section 2)', () => {
+    // Rule 5.
+    it('returns 404 NOT_FOUND for a sha that is not recorded for this project (T050)', async () => {
+      await sync({ branches: [trunk], commits: [validCommit({ sha: sha(1) })] });
+
+      const res = await commitDetail(sha(999));
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('NOT_FOUND');
+    });
+
+    // Rule 5, sharper: single-tenant means no ownership check (FR-030), but a
+    // commit is still scoped to its project -- a sha recorded elsewhere is
+    // unknown HERE, and must not leak across projects.
+    it('returns 404 for a sha recorded on a different project (T050)', async () => {
+      const otherId = await newProject('Other');
+      await request(app)
+        .post(syncUrl(otherId))
+        .set(auth)
+        .send({ branches: [trunk], commits: [validCommit({ sha: sha(7) })] });
+
+      const res = await commitDetail(sha(7));
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('NOT_FOUND');
+    });
+
+    it('carries exactly the contracted fields (T050)', async () => {
+      await sync({
+        branches: [trunk, feature],
+        commits: [
+          validCommit({
+            sha: sha(1),
+            branchName: feature.name,
+            message: 'feat: something',
+            parentShas: [sha(2)],
+            isMerge: true,
+            pushed: false,
+          }),
+        ],
+      });
+
+      const res = await commitDetail(sha(1));
+      expect(res.status).toBe(200);
+      expect(Object.keys(res.body).sort()).toEqual(
+        [
+          'sha',
+          'branchId',
+          'branchName',
+          'message',
+          'authorName',
+          'committedAt',
+          'pushed',
+          'isMerge',
+          'parentShas',
+          'files',
+          'truncatedFileCount',
+          'tickets',
+        ].sort(),
+      );
+      expect(res.body.sha).toBe(sha(1));
+      expect(res.body.branchName).toBe(feature.name);
+      expect(res.body.branchId).toBe(await branchIdOf(feature.name));
+      expect(res.body.message).toBe('feat: something');
+      expect(res.body.authorName).toBe('juglarx');
+      expect(res.body.parentShas).toEqual([sha(2)]);
+      expect(res.body.isMerge).toBe(true);
+      expect(res.body.pushed).toBe(false);
+      expect(res.body.files).toEqual([{ path: 'README.md', changeType: 'A' }]);
+    });
+
+    // Rule 1, and the Phase 3 review finding behind it: the READ path caps at
+    // 500, because the write path's cap is per BATCH and sync never deletes
+    // (rule 2 / FR-032). Re-reporting one sha with a different set of 500 paths
+    // leaves 1000 rows on that commit, so a read that trusted the write path
+    // would return 1000 and break rule 1. The two batches use path prefixes
+    // that interleave under an ascending sort ("a/..." sorts before "b/..."
+    // although it was written second), so a response that returned insertion
+    // order, or the first 500 rows as stored, fails this test.
+    it('orders files by path ascending and caps them at 500 on read (T050)', async () => {
+      const paths = (prefix: string) =>
+        Array.from({ length: 500 }, (_, i) => ({
+          path: `${prefix}/${i.toString().padStart(3, '0')}.ts`,
+          changeType: 'A',
+        }));
+
+      await sync({
+        branches: [trunk],
+        commits: [validCommit({ sha: sha(1), files: paths('b') })],
+      });
+      await sync({
+        branches: [trunk],
+        commits: [validCommit({ sha: sha(1), files: paths('a') })],
+      });
+
+      // 1000 rows really are stored: sync is additive and deletes nothing.
+      expect(await prisma.gitCommitFile.count()).toBe(1000);
+
+      const res = await commitDetail(sha(1));
+      expect(res.status).toBe(200);
+      expect(res.body.files).toHaveLength(500);
+      expect(res.body.files.map((f: { path: string }) => f.path)).toEqual(
+        paths('a').map((f) => f.path),
+      );
+      const returned = res.body.files.map((f: { path: string }) => f.path);
+      expect(returned).toEqual([...returned].sort());
+    });
+
+    // Rule 2: truncatedFileCount comes from the commit row and is reported
+    // unchanged -- the read-side cap above does not re-write it.
+    it('reports truncatedFileCount from the commit row (T050)', async () => {
+      await sync({
+        branches: [trunk],
+        commits: [
+          validCommit({
+            sha: sha(1),
+            files: [{ path: 'b.ts', changeType: 'M' }],
+            truncatedFileCount: 7,
+          }),
+        ],
+      });
+
+      const res = await commitDetail(sha(1));
+      expect(res.status).toBe(200);
+      expect(res.body.truncatedFileCount).toBe(7);
+      expect(res.body.files).toEqual([{ path: 'b.ts', changeType: 'M' }]);
+    });
+
+    // Rule 3, first clause: when the commit has at least one reported link,
+    // `tickets` is EXACTLY those links, every one "reported". Inference is not
+    // mixed in -- so the branch-matching ticket that is not linked must be
+    // absent, which is what stops a guess being dressed up as a fact (D9).
+    it('returns every reported link as source "reported" and mixes in no inference (T050)', async () => {
+      const linked = await newTicketOn(null, 'Linked by the agent');
+      const branchMatched = await newTicketOn(feature.name, 'Merely on the same branch');
+
+      await sync({
+        branches: [trunk, feature],
+        commits: [
+          validCommit({ sha: sha(1), branchName: feature.name, ticketIds: [linked.id] }),
+        ],
+      });
+
+      const res = await commitDetail(sha(1));
+      expect(res.status).toBe(200);
+      expectEveryTicketCarriesASource(res.body.tickets);
+      expect(res.body.tickets).toHaveLength(1);
+      expect(res.body.tickets[0]).toEqual({
+        id: linked.id,
+        number: linked.number,
+        name: 'Linked by the agent',
+        source: 'reported',
+      });
+      expect(sourceOf(res.body.tickets, branchMatched.id)).toBeUndefined();
+    });
+
+    // Rule 3, second clause: with no reported link, `tickets` is the project's
+    // tickets whose gitBranch equals the commit's BRANCH NAME, every one
+    // "inferred" (research R6 -- derived at read time, never stored).
+    it('returns branch-matched tickets as source "inferred" when nothing was reported (T050)', async () => {
+      const onBranch = await newTicketOn(feature.name, 'On the feature branch');
+      const alsoOnBranch = await newTicketOn(feature.name, 'Also on the feature branch');
+      const elsewhere = await newTicketOn('main', 'On another branch');
+      const unbranched = await newTicketOn(null, 'No branch reported');
+
+      await sync({
+        branches: [trunk, feature],
+        commits: [validCommit({ sha: sha(1), branchName: feature.name, ticketIds: [] })],
+      });
+
+      const res = await commitDetail(sha(1));
+      expect(res.status).toBe(200);
+      expectEveryTicketCarriesASource(res.body.tickets);
+      expect(res.body.tickets.map((t: TicketRef) => t.id).sort()).toEqual(
+        [onBranch.id, alsoOnBranch.id].sort(),
+      );
+      expect(sourceOf(res.body.tickets, onBranch.id)).toBe('inferred');
+      expect(sourceOf(res.body.tickets, alsoOnBranch.id)).toBe('inferred');
+      expect(sourceOf(res.body.tickets, elsewhere.id)).toBeUndefined();
+      expect(sourceOf(res.body.tickets, unbranched.id)).toBeUndefined();
+
+      // Nothing inferred is written: the link table still holds only what the
+      // agent reported, which here is nothing (research R6, schema note).
+      expect(await prisma.gitCommitTicket.count()).toBe(0);
+    });
+
+    // Rule 3, third clause.
+    it('returns tickets: [] with neither a reported link nor a branch match (T050)', async () => {
+      await newTicketOn('some-other-branch', 'Unrelated');
+
+      await sync({
+        branches: [trunk, feature],
+        commits: [validCommit({ sha: sha(1), branchName: feature.name, ticketIds: [] })],
+      });
+
+      const res = await commitDetail(sha(1));
+      expect(res.status).toBe(200);
+      expect(res.body.tickets).toEqual([]);
+    });
+
+    // Rule 4, stated on its own: no response ever carries a ticket without a
+    // source, whichever clause of rule 3 produced it.
+    it('never returns a ticket without a source, reported or inferred (T050)', async () => {
+      const linked = await newTicketOn(feature.name, 'Linked');
+      await newTicketOn(feature.name, 'Inferred only');
+
+      await sync({
+        branches: [trunk, feature],
+        commits: [
+          validCommit({ sha: sha(1), branchName: feature.name, ticketIds: [linked.id] }),
+          validCommit({ sha: sha(2), branchName: feature.name, ticketIds: [] }),
+        ],
+      });
+
+      for (const s of [sha(1), sha(2)]) {
+        const res = await commitDetail(s);
+        expect(res.status).toBe(200);
+        expect(res.body.tickets.length).toBeGreaterThan(0);
+        expectEveryTicketCarriesASource(res.body.tickets);
+      }
+    });
+  });
+
+  // T055 / US4, contracts/http-api.md section 3: one branch's aggregate. Keyed
+  // on branchId, not name, because branch names contain "/" (research R12).
+  describe('GET /branches/:branchId (US4, contracts/http-api.md section 3)', () => {
+    // Rule 6, both halves.
+    it('returns 404 NOT_FOUND for an unknown branchId (T055)', async () => {
+      await sync({ branches: [trunk], commits: [] });
+
+      const res = await branchDetail('11111111-1111-4111-8111-111111111111');
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('NOT_FOUND');
+    });
+
+    it('returns 404 for a branch belonging to another project (T055)', async () => {
+      const otherId = await newProject('Other');
+      await request(app)
+        .post(syncUrl(otherId))
+        .set(auth)
+        .send({ branches: [feature], commits: [] });
+      const foreignBranchId = await branchIdOf(feature.name, otherId);
+
+      const res = await branchDetail(foreignBranchId);
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('NOT_FOUND');
+
+      // It is a real branch, reachable under its OWN project -- so the 404
+      // above is the project scoping and not a broken lookup.
+      const own = await branchDetail(foreignBranchId, otherId);
+      expect(own.status).toBe(200);
+    });
+
+    it('carries exactly the contracted fields (T055)', async () => {
+      const synced = await sync({
+        branches: [trunk, { ...feature, state: 'MERGED' }],
+        commits: [validCommit({ sha: sha(1), branchName: feature.name })],
+      });
+
+      const res = await branchDetail(await branchIdOf(feature.name));
+      expect(res.status).toBe(200);
+      expect(Object.keys(res.body).sort()).toEqual(
+        [
+          'id',
+          'name',
+          'isTrunk',
+          'state',
+          'forkedFromBranchName',
+          'lastSyncedAt',
+          'commitCount',
+          'commitMessages',
+          'files',
+          'truncatedFileCount',
+          'tickets',
+        ].sort(),
+      );
+      expect(res.body.name).toBe(feature.name);
+      expect(res.body.isTrunk).toBe(false);
+      expect(res.body.state).toBe('MERGED');
+      expect(res.body.forkedFromBranchName).toBe('main');
+      expect(res.body.lastSyncedAt).toBe(synced.body.lastSyncedAt);
+      // Rule 4/FR-015: the description is composed BY THE CLIENT from name,
+      // state and commitMessages. No authored description exists here or in the
+      // database, so a `description` field in this payload is a defect.
+      expect(res.body.description).toBeUndefined();
+    });
+
+    // Rule 1: the distinct union, ordered by path ascending, with the MOST
+    // RECENT commit's change type winning. `shared.ts` is added by the older
+    // commit and modified by the newer one, so a union that took the first
+    // occurrence would report "A" and fail.
+    it('returns the distinct union of files ordered by path, newest change type winning (T055)', async () => {
+      await sync({
+        branches: [trunk, feature],
+        commits: [
+          validCommit({
+            sha: sha(1),
+            branchName: feature.name,
+            committedAt: '2026-08-20T10:00:00.000Z',
+            files: [
+              { path: 'z.ts', changeType: 'A' },
+              { path: 'shared.ts', changeType: 'A' },
+            ],
+          }),
+          validCommit({
+            sha: sha(2),
+            branchName: feature.name,
+            committedAt: '2026-08-21T10:00:00.000Z',
+            files: [
+              { path: 'shared.ts', changeType: 'M' },
+              { path: 'a.ts', changeType: 'D' },
+            ],
+          }),
+          // Another branch's commit touching the same path must not leak in.
+          validCommit({
+            sha: sha(3),
+            branchName: 'main',
+            committedAt: '2026-08-22T10:00:00.000Z',
+            files: [
+              { path: 'shared.ts', changeType: 'D' },
+              { path: 'trunk-only.ts', changeType: 'A' },
+            ],
+          }),
+        ],
+      });
+
+      const res = await branchDetail(await branchIdOf(feature.name));
+      expect(res.status).toBe(200);
+      expect(res.body.files).toEqual([
+        { path: 'a.ts', changeType: 'D' },
+        { path: 'shared.ts', changeType: 'M' },
+        { path: 'z.ts', changeType: 'A' },
+      ]);
+    });
+
+    // Rule 1's tie-break, fixed in the phase brief: when two commits touching a
+    // path share an identical committedAt, the HIGHER sha wins -- reusing the
+    // (committedAt, sha) ordering section 1 rule 3 already fixes, so the output
+    // is deterministic. Sent in descending-sha order so a pass cannot be an
+    // accident of insertion order.
+    it('breaks a committedAt tie on the higher sha when a path repeats (T055)', async () => {
+      const tied = '2026-08-21T19:00:00.000Z';
+      await sync({
+        branches: [trunk, feature],
+        commits: [
+          validCommit({
+            sha: sha(9),
+            branchName: feature.name,
+            committedAt: tied,
+            files: [{ path: 'tie.ts', changeType: 'D' }],
+          }),
+          validCommit({
+            sha: sha(3),
+            branchName: feature.name,
+            committedAt: tied,
+            files: [{ path: 'tie.ts', changeType: 'M' }],
+          }),
+        ],
+      });
+
+      const res = await branchDetail(await branchIdOf(feature.name));
+      expect(res.status).toBe(200);
+      expect(res.body.files).toEqual([{ path: 'tie.ts', changeType: 'D' }]);
+    });
+
+    // Rule 2: summed across the branch's commits, and only its own.
+    it('sums truncatedFileCount across the branch commits (T055)', async () => {
+      await sync({
+        branches: [trunk, feature],
+        commits: [
+          validCommit({ sha: sha(1), branchName: feature.name, truncatedFileCount: 2 }),
+          validCommit({ sha: sha(2), branchName: feature.name, truncatedFileCount: 3 }),
+          validCommit({ sha: sha(3), branchName: 'main', truncatedFileCount: 40 }),
+        ],
+      });
+
+      const res = await branchDetail(await branchIdOf(feature.name));
+      expect(res.status).toBe(200);
+      expect(res.body.truncatedFileCount).toBe(5);
+    });
+
+    // Rule 3: the union of the commits' tickets under section 2 rule 3,
+    // de-duplicated by id, with `reported` on ANY commit winning.
+    //   c1 (oldest)  reports TA          -> TA reported
+    //   c2 (middle)  reports nothing     -> TA, TB, TC inferred (all match the branch)
+    //   c3 (newest)  reports TB          -> TB reported
+    // TA proves a reported link is not later overwritten by an inference; TB
+    // proves an earlier inference is upgraded by a later reported link. A
+    // last-one-wins merge fails on one or the other whichever way it iterates.
+    it('de-duplicates tickets with reported winning over inferred (T055)', async () => {
+      const ta = await newTicketOn(feature.name, 'Reported on the oldest commit');
+      const tb = await newTicketOn(feature.name, 'Reported on the newest commit');
+      const tc = await newTicketOn(feature.name, 'Never reported');
+
+      await sync({
+        branches: [trunk, feature],
+        commits: [
+          validCommit({
+            sha: sha(1),
+            branchName: feature.name,
+            committedAt: '2026-08-19T10:00:00.000Z',
+            ticketIds: [ta.id],
+          }),
+          validCommit({
+            sha: sha(2),
+            branchName: feature.name,
+            committedAt: '2026-08-20T10:00:00.000Z',
+            ticketIds: [],
+          }),
+          validCommit({
+            sha: sha(3),
+            branchName: feature.name,
+            committedAt: '2026-08-21T10:00:00.000Z',
+            ticketIds: [tb.id],
+          }),
+        ],
+      });
+
+      const res = await branchDetail(await branchIdOf(feature.name));
+      expect(res.status).toBe(200);
+      expectEveryTicketCarriesASource(res.body.tickets);
+      expect(res.body.tickets.map((t: TicketRef) => t.id).sort()).toEqual(
+        [ta.id, tb.id, tc.id].sort(),
+      );
+      expect(sourceOf(res.body.tickets, ta.id)).toBe('reported');
+      expect(sourceOf(res.body.tickets, tb.id)).toBe('reported');
+      expect(sourceOf(res.body.tickets, tc.id)).toBe('inferred');
+    });
+
+    // Rule 5: newest first, capped at 50, with commitCount giving the TRUE
+    // total so the client can say the list shown is a subset (FR-015).
+    it('returns commitMessages newest-first capped at 50 with the true commitCount (T055)', async () => {
+      const commitAt = (i: number) => new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString();
+      const batch = (from: number, to: number) =>
+        Array.from({ length: to - from }, (_, k) =>
+          validCommit({
+            sha: sha(from + k + 1),
+            branchName: feature.name,
+            message: `msg-${from + k}`,
+            committedAt: commitAt(from + k),
+            files: [],
+          }),
+        );
+
+      await sync({ branches: [trunk, feature], commits: batch(0, 30) });
+      await sync({ branches: [feature], commits: batch(30, 60) });
+
+      const res = await branchDetail(await branchIdOf(feature.name));
+      expect(res.status).toBe(200);
+      expect(res.body.commitCount).toBe(60);
+      expect(res.body.commitMessages).toHaveLength(50);
+      expect(res.body.commitCount).toBeGreaterThan(res.body.commitMessages.length);
+      // Newest first: msg-59 down to msg-10.
+      expect(res.body.commitMessages).toEqual(
+        Array.from({ length: 50 }, (_, i) => `msg-${59 - i}`),
+      );
+    });
+
+    it('returns every commit message when the branch has fewer than 50 (T055)', async () => {
+      await sync({
+        branches: [trunk, feature],
+        commits: [
+          validCommit({
+            sha: sha(1),
+            branchName: feature.name,
+            message: 'older',
+            committedAt: '2026-08-19T10:00:00.000Z',
+          }),
+          validCommit({
+            sha: sha(2),
+            branchName: feature.name,
+            message: 'newer',
+            committedAt: '2026-08-20T10:00:00.000Z',
+          }),
+        ],
+      });
+
+      const res = await branchDetail(await branchIdOf(feature.name));
+      expect(res.status).toBe(200);
+      expect(res.body.commitCount).toBe(2);
+      expect(res.body.commitMessages).toEqual(['newer', 'older']);
+    });
+
+    it('returns the empty aggregate for a branch with no commits (T055)', async () => {
+      await sync({ branches: [trunk, feature], commits: [] });
+
+      const res = await branchDetail(await branchIdOf(feature.name));
+      expect(res.status).toBe(200);
+      expect(res.body.commitCount).toBe(0);
+      expect(res.body.commitMessages).toEqual([]);
+      expect(res.body.files).toEqual([]);
+      expect(res.body.truncatedFileCount).toBe(0);
+      expect(res.body.tickets).toEqual([]);
+    });
+  });
+
+  // T060 / US5, contracts/http-api.md section 1 rules 2 and 5. This is an
+  // explicit REGRESSION test: `GET /` already answers the never-synced shape
+  // with a 200 (see the section 1 block above), and US5 turns that behaviour
+  // into a named guarantee, because the whole FR-029 empty state depends on it.
+  // A 404 here would make "never synced" indistinguishable from "no such
+  // project" and from a transport failure (FR-033).
+  describe('GET / never-synced regression (US5, T060)', () => {
+    it('answers 200 with the never-synced shape, not 404, for an existing unsynced project', async () => {
+      // The project exists: it was created in beforeEach and is readable.
+      const project = await request(app).get(`/api/v1/projects/${projectId}`).set(auth);
+      expect(project.status).toBe(200);
+      // ... and has genuinely never been synced.
+      expect(await prisma.gitBranch.count({ where: { projectId } })).toBe(0);
+
+      const res = await list();
+
+      expect(res.status).toBe(200);
+      expect(res.status).not.toBe(404);
+      expect(res.body.error).toBeUndefined();
+      expect(res.body).toEqual({ lastSyncedAt: null, branches: [], commits: [] });
+    });
+
+    it('still answers 404 for an unknown projectId, so the 200 above is not blanket', async () => {
+      const res = await list('11111111-1111-4111-8111-111111111111');
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('NOT_FOUND');
+    });
+  });
 });
