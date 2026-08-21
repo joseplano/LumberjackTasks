@@ -78,6 +78,34 @@ export interface GitHistorySyncResult {
   lastSyncedAt: string;
 }
 
+interface GitHistoryBranchSummary {
+  id: string;
+  name: string;
+  isTrunk: boolean;
+  forkedFromBranchName: string | null;
+  state: BranchState;
+  lastSyncedAt: string;
+}
+
+interface GitHistoryCommitSummary {
+  sha: string;
+  branchId: string;
+  message: string;
+  authorName: string;
+  committedAt: string;
+  pushed: boolean;
+  isMerge: boolean;
+  parentShas: string[];
+  fileCount: number;
+  truncatedFileCount: number;
+}
+
+export interface GitHistoryListResult {
+  lastSyncedAt: string | null;
+  branches: GitHistoryBranchSummary[];
+  commits: GitHistoryCommitSummary[];
+}
+
 function invalid(message: string): never {
   throw new ApiError(400, 'VALIDATION', message);
 }
@@ -517,4 +545,74 @@ export async function syncGitHistory(
     // interactive-transaction budget is not enough for the upper end of that.
     { maxWait: 15_000, timeout: 120_000 },
   );
+}
+
+/**
+ * `GET /api/v1/projects/:projectId/git-history` (contract section 1): the only
+ * read path this file exposes for now. Returns everything the tree needs to
+ * draw itself, and nothing else -- no file lists (research R12).
+ *
+ * Rule 5: an unknown `projectId` is a 404. Rule 2: an existing project that has
+ * never been synced (zero `GitBranch` rows, data-model.md "Derived values") is a
+ * 200 with `{ lastSyncedAt: null, branches: [], commits: [] }` -- the client
+ * must be able to tell "never synced" apart from "no such project" and from a
+ * transport failure (FR-033), so those two states are deliberately different
+ * status codes here.
+ */
+export async function listGitHistory(projectId: string): Promise<GitHistoryListResult> {
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true } });
+  if (!project) throw new ApiError(404, 'NOT_FOUND', 'Project not found');
+
+  const branches = await prisma.gitBranch.findMany({ where: { projectId } });
+
+  // "Never synced" (data-model.md): zero branches for an existing project. Not a
+  // 404 -- rule 2. Short-circuiting here also means an un-synced project never
+  // touches gitCommit at all.
+  if (branches.length === 0) {
+    return { lastSyncedAt: null, branches: [], commits: [] };
+  }
+
+  // Rule 1: the maximum lastSyncedAt across the project's branches, computed
+  // here rather than stored anywhere (data-model.md "Derived values").
+  const lastSyncedAt = branches.reduce(
+    (max, branch) => (branch.lastSyncedAt > max ? branch.lastSyncedAt : max),
+    branches[0].lastSyncedAt,
+  );
+
+  // Rule 3: ordered by committedAt ascending, ties broken by sha ascending. The
+  // tie-break exists because the frontend's geometry function (research R11)
+  // must be a total, assertable function of this list -- without it, two
+  // commits sharing a committedAt would swap order between runs.
+  const commits = await prisma.gitCommit.findMany({
+    where: { projectId },
+    orderBy: [{ committedAt: 'asc' }, { sha: 'asc' }],
+    include: { _count: { select: { files: true } } },
+  });
+
+  return {
+    lastSyncedAt: lastSyncedAt.toISOString(),
+    branches: branches.map((branch) => ({
+      id: branch.id,
+      name: branch.name,
+      isTrunk: branch.isTrunk,
+      forkedFromBranchName: branch.forkedFromBranchName,
+      state: branch.state,
+      lastSyncedAt: branch.lastSyncedAt.toISOString(),
+    })),
+    // Rule 4 + research R12: fileCount is the number of STORED file rows, never
+    // the paths themselves. truncatedFileCount travels alongside it unchanged;
+    // fileCount + truncatedFileCount is the real total the client can report.
+    commits: commits.map((commit) => ({
+      sha: commit.sha,
+      branchId: commit.branchId,
+      message: commit.message,
+      authorName: commit.authorName,
+      committedAt: commit.committedAt.toISOString(),
+      pushed: commit.pushed,
+      isMerge: commit.isMerge,
+      parentShas: commit.parentShas,
+      fileCount: commit._count.files,
+      truncatedFileCount: commit.truncatedFileCount,
+    })),
+  };
 }

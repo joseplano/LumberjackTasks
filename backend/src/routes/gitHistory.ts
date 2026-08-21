@@ -1,6 +1,6 @@
 import { Router, type Request } from 'express';
 import type { GitBranchState, GitFileChange } from '@prisma/client';
-import { syncGitHistory } from '../services/gitHistory';
+import { listGitHistory, syncGitHistory } from '../services/gitHistory';
 
 /**
  * Response types for the four repository-history endpoints of feature
@@ -129,6 +129,15 @@ type ProjectParams = { projectId: string };
 // under `/api/v1/projects/:projectId/git-history` -- same as every other project
 // sub-router in this repository (see routes/columns.ts, routes/projectTickets.ts).
 const router = Router({ mergeParams: true });
+
+/** `GET /api/v1/projects/:projectId/git-history` (contract section 1). The read
+ * path that feeds the SVG tree: everything it needs, nothing else -- no file
+ * lists (research R12). The service resolves the never-synced-vs-unknown-project
+ * distinction (rules 2 and 5); this handler only shuttles the result back. */
+router.get('/', async (req: Request<ProjectParams>, res) => {
+  const result: GitHistoryTreeResponse = await listGitHistory(req.params.projectId);
+  res.json(result);
+});
 
 /** `POST /api/v1/projects/:projectId/git-history/sync` (contract section 4).
  * The service owns validation, the transaction and the idempotent upserts; this
