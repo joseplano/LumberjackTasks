@@ -75,13 +75,48 @@ repository already contains.
     precedence below).
   - `git status --porcelain` — whether the **currently checked-out** branch's working tree is
     dirty.
-  - `git log --format='%H|%P|%an|%aI|%s' --name-status <branch>` — commits for one branch, with
-    parent SHAs (`%P`), author, ISO date, subject, and the changed files. `--name-status` emits one
-    of `A`/`M`/`D`/`R` per file, which maps directly to `files[].changeType`.
-  - `git log --all --format='%H|%P|%an|%aI|%s' --name-status` — the one-time backfill (D4): walks
-    every branch's history in one pass instead of one branch at a time.
+  - `git log --first-parent --format='%H|%P|%an|%aI|%s' --name-status <branch>` — the commits to
+    attribute to that branch, with parent SHAs (`%P`), author, ISO date, subject and the changed
+    files. **`--first-parent` is not optional** — see **Which branch a commit belongs to** below.
   - `git log --format=%H --branches --not --remotes` — the unpushed set, computed once per sync
     (see **Deriving `commits[].pushed`** below), not shelled out per commit.
+- **Which branch a commit belongs to.** D8/FR-024 attribute a commit to the branch it was
+  introduced on, *determined by its first parent*, and the backend makes that attribution
+  **permanent on first report**: once a sha is recorded, its `branchId` is never updated. A wrong
+  first guess is uncorrectable, so get the walk right the first time.
+  1. **Sync the trunk (`main`) first**, with `git log --first-parent main`. This yields only the
+     trunk's own commits and its merge commits — not the commits that arrived through those merges.
+  2. **Then every other branch**, each with `git log --first-parent <branch>`.
+  3. **Do not reorder this, and do not "optimise" the overlap away.** A branch's first-parent walk
+     still runs back through the trunk, so trunk commits are reported a second time — that is
+     harmless and intended: the backend keeps a sha's original `branchName`, so the trunk-first pass
+     has already claimed them. Ordering is the whole mechanism.
+  - **Never use plain `git log <branch>`** (no `--first-parent`): it returns the branch's entire
+    ancestry, so syncing a feature branch before the trunk permanently attributes the trunk's
+    commits to the feature branch.
+  - **Never use `git log <branch> --not main`** either: a branch that has already been merged has
+    no commits unreachable from the trunk, so this reports **zero** commits for every merged branch
+    and collapses it into the trunk lane.
+- **The one-time backfill (D4)** is the same walk over every branch, trunk first — not a single
+  pass. Loop over `git branch --format='%(refname:short)'`, doing `main` first, and run the
+  per-branch command above for each. **`git log --all` must not be used for this**: it emits no
+  branch information at all, so it cannot supply the required `commits[].branchName`, and guessing
+  one is rejected by the backend and fails the whole call. (`--all` also drags in
+  remote-tracking refs and tags, which are not branches to record.)
+- **Reading `--name-status` into `files[]`.** The status column is *not* always a single letter,
+  and `files[].changeType` accepts only `A`, `M`, `D`, `R` — anything else fails the entire batch
+  before it leaves the machine. Parse each tab-separated line like this:
+  - `A|M|D<TAB>path` → that letter, that path.
+  - `R###<TAB>old/path<TAB>new/path` (rename detection is on by default) → `changeType: "R"`, and
+    the path is the **second, destination** path. Strip the similarity score: `R100` → `R`.
+  - `C###<TAB>old/path<TAB>new/path` (only with `-C`) → the destination path, recorded as
+    `changeType: "A"` — a copy creates a new file there.
+  - `T` (typechange) → `M`.
+  - Anything else unexpected → `M`. Never send the raw score-suffixed status, and never invent a
+    fifth `changeType`.
+- **Deriving `commits[].isMerge`.** True when the commit has more than one parent — i.e.
+  `parentShas.length > 1`, from the same `%P` field that fills `parentShas`. Do not derive it from
+  the subject line.
 - **Deriving `commits[].pushed`.** A commit is pushed when it is reachable from a remote-tracking
   ref. Run `git log --format=%H --branches --not --remotes` once per sync: it lists every commit on
   a local branch that no remote-tracking ref contains. `pushed` is `false` for a sha in that set,
@@ -111,6 +146,10 @@ repository already contains.
 - **The 500-file cap.** Report at most 500 `files` entries per commit; put the remainder in
   `truncatedFileCount` (0 when the list is complete — never omit it). Sending more than 500 files
   is rejected outright, not trimmed for you.
+- **`commits[].ticketIds`.** Optional, but report it whenever you know it: pass the ids of the
+  tickets the commit belongs to (the ones you are moving through the board for this work). The
+  screen uses those links directly; with them omitted it falls back to guessing from the branch
+  name and labels the association "inferred".
 - **Every boolean and `parentShas` are required, always** — `branches[].isTrunk`,
   `commits[].pushed`, `commits[].isMerge`, and `commits[].parentShas` (`[]` for a root commit).
   Omitting one is read as new information, not "unchanged", so it can silently overwrite recorded
