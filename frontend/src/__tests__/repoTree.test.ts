@@ -109,6 +109,26 @@ describe('buildRepoTree', () => {
     expect(xBySha.zzz).toBe(COLUMN_GAP);
   });
 
+  it('produces stable, input-order-independent output for a malformed (unparseable) committedAt', () => {
+    // Date.parse('not-a-date') is NaN, and every comparison against NaN
+    // returns 0 — that would make the malformed commit tie with both b1 and
+    // b2, whose own timestamps are not equal, breaking transitivity and
+    // making the sort order depend on input array position. Lexicographic
+    // comparison stays total and transitive, so the order is fixed
+    // regardless of input order.
+    const branches = [{ id: 'b-main', name: 'main', isTrunk: true, state: 'ACTIVE' as const }];
+    const commitA = { sha: 'b1', branchId: 'b-main', committedAt: '2024-01-01T00:00:00Z', parentShas: [] };
+    const commitB = { sha: 'garbage', branchId: 'b-main', committedAt: 'not-a-date', parentShas: [] };
+    const commitC = { sha: 'b2', branchId: 'b-main', committedAt: '2024-01-02T00:00:00Z', parentShas: [] };
+
+    const result1 = buildRepoTree({ branches, commits: [commitA, commitB, commitC] });
+    const result2 = buildRepoTree({ branches, commits: [commitC, commitB, commitA] });
+
+    const xBySha1 = Object.fromEntries(result1.nodes.map((n) => [n.sha, n.x]));
+    const xBySha2 = Object.fromEntries(result2.nodes.map((n) => [n.sha, n.x]));
+    expect(xBySha2).toEqual(xBySha1);
+  });
+
   // --- Rule 2 (FR-005): lane order ---
 
   it('assigns the trunk lane 0 even when it is not first in the input', () => {
@@ -126,21 +146,47 @@ describe('buildRepoTree', () => {
     expect(mainLane?.y).toBe(0);
   });
 
-  it('breaks a lane-order tie by branch name ascending (genuine tie: identical earliest-commit timestamps)', () => {
+  it('orders lanes by earliest-commit column, not name, when name order and column order disagree (genuine tie: identical earliest-commit timestamps, sha order opposite of name order)', () => {
+    // zebra's earliest commit sha ('a1') sorts before alpha's ('z1'), so on
+    // the shared committedAt they tie and column is decided by sha: zebra
+    // gets the lower column, hence the lower lane index — the opposite of
+    // what a name-based or committedAt-based key would produce.
     const branches = [
       { id: 'b-main', name: 'main', isTrunk: true, state: 'ACTIVE' as const },
       { id: 'b-zebra', name: 'zebra', isTrunk: false, state: 'ACTIVE' as const },
       { id: 'b-alpha', name: 'alpha', isTrunk: false, state: 'ACTIVE' as const },
     ];
     const commits = [
-      { sha: 'z1', branchId: 'b-zebra', committedAt: '2024-01-05T00:00:00Z', parentShas: [] },
-      { sha: 'a1', branchId: 'b-alpha', committedAt: '2024-01-05T00:00:00Z', parentShas: [] },
+      { sha: 'z1', branchId: 'b-alpha', committedAt: '2024-01-05T00:00:00Z', parentShas: [] },
+      { sha: 'a1', branchId: 'b-zebra', committedAt: '2024-01-05T00:00:00Z', parentShas: [] },
     ];
     const result = buildRepoTree({ branches, commits });
 
+    const mainLane = result.lanes.find((l) => l.branchId === 'b-main')!;
     const alphaLane = result.lanes.find((l) => l.branchId === 'b-alpha')!;
     const zebraLane = result.lanes.find((l) => l.branchId === 'b-zebra')!;
-    expect(alphaLane.laneIndex).toBeLessThan(zebraLane.laneIndex);
+    expect(mainLane.laneIndex).toBe(0);
+    expect(zebraLane.laneIndex).toBe(1);
+    expect(alphaLane.laneIndex).toBe(2);
+  });
+
+  it('breaks a lane-order tie by branch name ascending for two commitless branches (genuine tie: neither has a commit, so column is undefined for both)', () => {
+    const branches = [
+      { id: 'b-main', name: 'main', isTrunk: true, state: 'ACTIVE' as const },
+      { id: 'b-bravo', name: 'bravo', isTrunk: false, state: 'UNCOMMITTED' as const },
+      { id: 'b-alpha', name: 'alpha', isTrunk: false, state: 'UNCOMMITTED' as const },
+    ];
+    const commits = [
+      { sha: 'm1', branchId: 'b-main', committedAt: '2024-01-01T00:00:00Z', parentShas: [] },
+    ];
+    const result = buildRepoTree({ branches, commits });
+
+    const mainLane = result.lanes.find((l) => l.branchId === 'b-main')!;
+    const alphaLane = result.lanes.find((l) => l.branchId === 'b-alpha')!;
+    const bravoLane = result.lanes.find((l) => l.branchId === 'b-bravo')!;
+    expect(mainLane.laneIndex).toBe(0);
+    expect(alphaLane.laneIndex).toBe(1);
+    expect(bravoLane.laneIndex).toBe(2);
   });
 
   // --- Rule 3 (FR-012): colour ---
@@ -191,7 +237,7 @@ describe('buildRepoTree', () => {
   it('gives a branch with no commits a lane with startX === endX (=== 0 by decision)', () => {
     const branches = [
       { id: 'b-main', name: 'main', isTrunk: true, state: 'ACTIVE' as const },
-      { id: 'b-empty', name: 'empty', isTrunk: false, state: 'ACTIVE' as const },
+      { id: 'b-empty', name: 'empty', isTrunk: false, state: 'UNCOMMITTED' as const },
     ];
     const commits = [
       { sha: 'm1', branchId: 'b-main', committedAt: '2024-01-01T00:00:00Z', parentShas: [] },
@@ -279,5 +325,18 @@ describe('buildRepoTree', () => {
     expect(result2).toEqual(result1);
     expect(branches).toEqual(branchesSnapshot);
     expect(commits).toEqual(commitsSnapshot);
+  });
+
+  it('returns identical output for a shuffled copy of the same input (order-independence, not just reference reuse)', () => {
+    const { branches, commits } = forkMergeFixture();
+    // Same objects, reversed array order — calling twice with the same
+    // references (above) can't catch input-order sensitivity; this can.
+    const shuffledBranches = [...branches].reverse();
+    const shuffledCommits = [...commits].reverse();
+
+    const result1 = buildRepoTree({ branches, commits });
+    const result2 = buildRepoTree({ branches: shuffledBranches, commits: shuffledCommits });
+
+    expect(result2).toEqual(result1);
   });
 });

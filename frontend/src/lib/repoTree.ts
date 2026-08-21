@@ -59,12 +59,16 @@ export interface RepoTreeResult {
   height: number;
 }
 
+// Compares timestamps lexicographically rather than via Date.parse. For
+// well-formed ISO-8601 UTC timestamps (the expected input) this sorts
+// identically to chronological order. Unlike Date.parse (implementation-
+// and timezone-dependent on non-ISO input, and NaN on unparseable input,
+// which makes every comparison return 0 and breaks transitivity — a
+// garbage timestamp would tie with two commits that don't tie with each
+// other), string comparison is always transitive and total, so malformed
+// input can't make the result depend on input array order.
 function compareDates(a: string, b: string): number {
-  const ta = Date.parse(a);
-  const tb = Date.parse(b);
-  if (ta < tb) return -1;
-  if (ta > tb) return 1;
-  return 0;
+  return compareStrings(a, b);
 }
 
 function compareStrings(a: string, b: string): number {
@@ -105,7 +109,11 @@ export function buildRepoTree(input: RepoTreeInput): RepoTreeResult {
 
   const columnBySha = new Map<string, number>();
   sortedCommits.forEach((c, index) => columnBySha.set(c.sha, index));
-  const xOf = (sha: string): number => (columnBySha.get(sha) ?? 0) * COLUMN_GAP;
+  // Call-site-guaranteed: every sha passed to xOf below comes from
+  // sortedCommits (or commitBySha, which is built from sortedCommits), so
+  // columnBySha always has an entry. No `?? 0` fallback — a missing column
+  // would silently fabricate x = 0, exactly what rule 5 forbids elsewhere.
+  const xOf = (sha: string): number => columnBySha.get(sha)! * COLUMN_GAP;
 
   const commitBySha = new Map(sortedCommits.map((c) => [c.sha, c]));
 
@@ -126,14 +134,20 @@ export function buildRepoTree(input: RepoTreeInput): RepoTreeResult {
   // ordered by their earliest commit's column, ties broken by branch name
   // ascending.
   //
-  // Deliberately keyed here on the earliest own commit's raw committedAt
-  // rather than its already-assigned column index above: every commit's
-  // column is already unique (sha is a secondary sort key there), so two
-  // distinct branches' earliest commits could never tie on column and the
-  // name tie-break required by FR-005/R11 would be unreachable. Comparing
-  // by the timestamp directly lets two branches whose earliest commits
-  // share an instant genuinely tie, so the name tie-break is real.
-  const trunkBranches = input.branches.filter((b) => b.isTrunk);
+  // Keyed on the earliest own commit's already-assigned column (not its raw
+  // committedAt): rule 1 defines column as a unique integer derived from the
+  // same total order, so ordering by column is already deterministic and
+  // agrees with committedAt on distinct timestamps. The two views diverge
+  // only when two branches' earliest commits tie on committedAt but differ
+  // in sha — column keeps them ordered by that sha (first-appearance
+  // order), while committedAt would fall through to the name tie-break and
+  // could contradict left-to-right first-appearance order, which is exactly
+  // the property this rule exists to produce. The name tie-break below
+  // still fires for branches with no commits of their own, which the
+  // `aHas !== bHas` grouping puts together and column can't distinguish.
+  const trunkBranches = [...input.branches.filter((b) => b.isTrunk)].sort((a, b) =>
+    compareStrings(a.name, b.name)
+  );
   const otherBranches = input.branches.filter((b) => !b.isTrunk);
   const trunkId: string | undefined = trunkBranches[0]?.id;
 
@@ -144,8 +158,8 @@ export function buildRepoTree(input: RepoTreeInput): RepoTreeResult {
     const bHas = !!ownB && ownB.length > 0;
     if (aHas !== bHas) return aHas ? -1 : 1;
     if (aHas && ownA && ownB) {
-      const byDate = compareDates(ownA[0].committedAt, ownB[0].committedAt);
-      if (byDate !== 0) return byDate;
+      const byColumn = columnBySha.get(ownA[0].sha)! - columnBySha.get(ownB[0].sha)!;
+      if (byColumn !== 0) return byColumn;
     }
     return compareStrings(a.name, b.name);
   });
