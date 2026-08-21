@@ -6,10 +6,15 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   useParams: () => ({ id: 'p1' }),
 }));
-vi.mock('@/lib/api', () => ({ api: vi.fn(), getGitHistory: vi.fn() }));
+vi.mock('@/lib/api', () => ({
+  api: vi.fn(),
+  getGitHistory: vi.fn(),
+  getGitCommitDetail: vi.fn(),
+  getGitBranchDetail: vi.fn(),
+}));
 
 import RepoPage from '@/app/(app)/projects/[id]/repo/page';
-import { api, getGitHistory } from '@/lib/api';
+import { api, getGitBranchDetail, getGitCommitDetail, getGitHistory } from '@/lib/api';
 
 const project = {
   id: 'p1',
@@ -142,5 +147,108 @@ describe('RepoPage', () => {
 
     render(<RepoPage />);
     expect(await screen.findByText('Repo history unavailable')).toBeInTheDocument();
+  });
+});
+
+// The never-synced shape from contracts/http-api.md section 1 rule 2: a 200
+// with `lastSyncedAt: null` and both arrays empty. This is NOT a failure and
+// NOT a 404 -- it means the agent has never reported this project's history.
+const neverSynced = { lastSyncedAt: null, branches: [], commits: [] };
+
+// T061 (FR-029, FR-033, SC-007, SC-012): the three states must be
+// distinguishable and must never be conflated.
+describe('RepoPage — the three states', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api).mockImplementation((path: string) => {
+      if (path === '/projects/p1') return Promise.resolve(project);
+      return Promise.reject(new Error(`Unexpected path ${path}`));
+    });
+  });
+
+  it('while history is loading, shows a loading indication and not the empty state', async () => {
+    // A fetch still in flight: never resolves for the duration of the test.
+    vi.mocked(getGitHistory).mockReturnValue(new Promise(() => {}));
+
+    render(<RepoPage />);
+
+    expect(await screen.findByTestId('repo-loading')).toBeInTheDocument();
+    // Loading is not emptiness (FR-033).
+    expect(screen.queryByTestId('repo-never-synced')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('repo-error')).not.toBeInTheDocument();
+    expect(screen.queryAllByTestId('repo-commit')).toHaveLength(0);
+  });
+
+  it('when the fetch fails, names the reason and does not show the empty state', async () => {
+    vi.mocked(getGitHistory).mockRejectedValue(new Error('Database is unreachable'));
+
+    render(<RepoPage />);
+
+    const err = await screen.findByTestId('repo-error');
+    // The backend's own reason, not a generic "Something went wrong".
+    expect(err).toHaveTextContent('Database is unreachable');
+    // A failure to load MUST NOT be presented as an empty history (FR-033).
+    expect(screen.queryByTestId('repo-never-synced')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('repo-loading')).not.toBeInTheDocument();
+    expect(screen.queryAllByTestId('repo-lane')).toHaveLength(0);
+    expect(screen.queryAllByTestId('repo-commit')).toHaveLength(0);
+  });
+
+  it('when the project has never been synced, explains how to sync and fabricates nothing', async () => {
+    vi.mocked(getGitHistory).mockResolvedValue(neverSynced);
+
+    render(<RepoPage />);
+
+    const empty = await screen.findByTestId('repo-never-synced');
+    // FR-029: an empty state that EXPLAINS how to sync -- naming the agent
+    // tool and the skill that drives it, not a blank canvas.
+    expect(empty).toHaveTextContent(/never been synced/i);
+    expect(empty).toHaveTextContent(/sync_git_history/);
+    expect(empty).toHaveTextContent(/lumberjack-tasks:ticket-sync/);
+
+    // It is not an error and not a loading state.
+    expect(screen.queryByTestId('repo-error')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('repo-loading')).not.toBeInTheDocument();
+
+    // No fabricated history: no lanes, no commits, no invented timestamp.
+    expect(screen.queryAllByTestId('repo-lane')).toHaveLength(0);
+    expect(screen.queryAllByTestId('repo-commit')).toHaveLength(0);
+    expect(screen.queryByTestId('last-synced')).not.toBeInTheDocument();
+
+    // Constitution Principle I: the empty state offers instructions, never a
+    // second write path. There is no sync control on this screen.
+    expect(screen.queryByRole('button', { name: /sync/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /sync/i })).not.toBeInTheDocument();
+  });
+});
+
+// T062 (FR-028, SC-008): show when the history was last synced -- and only
+// when there is a real timestamp to show.
+describe('RepoPage — last synced', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api).mockImplementation((path: string) => {
+      if (path === '/projects/p1') return Promise.resolve(project);
+      return Promise.reject(new Error(`Unexpected path ${path}`));
+    });
+  });
+
+  it('renders the last-synced timestamp when lastSyncedAt is non-null', async () => {
+    vi.mocked(getGitHistory).mockResolvedValue(history);
+
+    render(<RepoPage />);
+
+    const stamp = await screen.findByTestId('last-synced');
+    expect(stamp).toHaveAttribute('datetime', history.lastSyncedAt);
+    expect(stamp).toHaveTextContent(new Date(history.lastSyncedAt).toLocaleString());
+  });
+
+  it('renders no last-synced timestamp when lastSyncedAt is null', async () => {
+    vi.mocked(getGitHistory).mockResolvedValue(neverSynced);
+
+    render(<RepoPage />);
+
+    expect(await screen.findByTestId('repo-never-synced')).toBeInTheDocument();
+    expect(screen.queryByTestId('last-synced')).not.toBeInTheDocument();
   });
 });
