@@ -254,6 +254,69 @@ describe('RepoPage — last synced', () => {
   });
 });
 
+// Fix round 1 (FR-015, SC-005): "clicking a branch lane OR ITS LABEL". The
+// label is not decoration — it is an affordance the spec names, so activating
+// it must open the same modal the lane opens.
+describe('RepoPage — the branch label opens the branch modal', () => {
+  const featureBranchDetail = {
+    id: 'b-feat',
+    name: 'feature',
+    isTrunk: false,
+    state: 'MERGED' as const,
+    forkedFromBranchName: 'main',
+    lastSyncedAt: '2026-08-21T19:40:00.000Z',
+    commitCount: 1,
+    commitMessages: ['Feature work'],
+    files: [{ path: 'frontend/src/lib/repoTree.ts', changeType: 'M' as const }],
+    truncatedFileCount: 0,
+    tickets: [{ id: 't-1', number: 41, name: 'A ticket', source: 'reported' as const }],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api).mockImplementation((path: string) => {
+      if (path === '/projects/p1') return Promise.resolve(project);
+      return Promise.reject(new Error(`Unexpected path ${path}`));
+    });
+    vi.mocked(getGitHistory).mockResolvedValue(history);
+    vi.mocked(getGitBranchDetail).mockResolvedValue(featureBranchDetail);
+  });
+
+  it('opens the branch modal from the label, and the same modal from the lane', async () => {
+    const user = userEvent.setup();
+    render(<RepoPage />);
+
+    await screen.findAllByTestId('repo-lane');
+
+    const labelFor = (branchId: string) => {
+      const el = screen
+        .getAllByTestId('repo-lane-label')
+        .find((l) => l.getAttribute('data-branch-id') === branchId);
+      if (!el) throw new Error(`No rendered label for ${branchId}`);
+      return el;
+    };
+    const laneFor = (branchId: string) => {
+      const el = screen
+        .getAllByTestId('repo-lane')
+        .find((l) => l.getAttribute('data-branch-id') === branchId);
+      if (!el) throw new Error(`No rendered lane for ${branchId}`);
+      return el;
+    };
+
+    // 1. The label opens it.
+    await user.click(labelFor('b-feat'));
+    expect(await screen.findByTestId('branch-description')).toHaveTextContent(/Branch "feature"/);
+    expect(vi.mocked(getGitBranchDetail)).toHaveBeenCalledWith('p1', 'b-feat');
+    const fromLabel = screen.getByTestId('branch-description').textContent;
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByTestId('branch-description')).not.toBeInTheDocument();
+
+    // 2. The lane opens the same one — one control, one handler (FR-015).
+    await user.click(laneFor('b-feat'));
+    expect(await screen.findByTestId('branch-description')).toHaveTextContent(fromLabel as string);
+  });
+});
+
 // T072 (FR-003, constitution Principle I): the executable proof that the
 // repository view is read-only.
 //
