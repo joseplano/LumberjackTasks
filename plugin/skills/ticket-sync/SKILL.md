@@ -80,6 +80,15 @@ repository already contains.
     of `A`/`M`/`D`/`R` per file, which maps directly to `files[].changeType`.
   - `git log --all --format='%H|%P|%an|%aI|%s' --name-status` — the one-time backfill (D4): walks
     every branch's history in one pass instead of one branch at a time.
+  - `git log --format=%H --branches --not --remotes` — the unpushed set, computed once per sync
+    (see **Deriving `commits[].pushed`** below), not shelled out per commit.
+- **Deriving `commits[].pushed`.** A commit is pushed when it is reachable from a remote-tracking
+  ref. Run `git log --format=%H --branches --not --remotes` once per sync: it lists every commit on
+  a local branch that no remote-tracking ref contains. `pushed` is `false` for a sha in that set,
+  `true` for every other sha. This is accurate only as of the last `git fetch` — remote-tracking
+  refs are a local cache, so a commit pushed from another machine reads as unpushed until the next
+  fetch. That is a property of how git works, not a defect: the field is recorded for completeness
+  (D6) and, per FR-013, being pushed is not a branch state and must never influence tree colour.
 - **State precedence — merged is checked first.** For each branch:
   1. Listed by `git branch --merged main`? → `MERGED`, **even if `git status --porcelain` is
      non-empty**. Checking `git status` before the merged check gets a merged-and-dirty branch
