@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { BRANCH_COLOR_TOKEN } from '@/lib/branchColorToken';
 
 vi.mock('next/navigation', () => ({
@@ -250,5 +251,126 @@ describe('RepoPage — last synced', () => {
 
     expect(await screen.findByTestId('repo-never-synced')).toBeInTheDocument();
     expect(screen.queryByTestId('last-synced')).not.toBeInTheDocument();
+  });
+});
+
+// T072 (FR-003, constitution Principle I): the executable proof that the
+// repository view is read-only.
+//
+// The module mock above replaces the api layer for every other test in this
+// file. Here the mocked exports are pointed back at the REAL implementations
+// and `fetch` itself is stubbed, so the actual HTTP method of every outbound
+// call is recorded. That is what makes this test discriminate: if any of
+// these calls were changed to POST, PUT, PATCH or DELETE -- in the page, in a
+// modal, or in `lib/api.ts` -- the recorded method would change and this
+// assertion would fail.
+const realApi = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
+
+interface RecordedRequest {
+  url: string;
+  method: string;
+}
+
+const commitDetail = {
+  sha: 'f1',
+  branchId: 'b-feat',
+  branchName: 'feature',
+  message: 'Feature work',
+  authorName: 'juglarx',
+  committedAt: '2024-01-02T00:00:00.000Z',
+  pushed: true,
+  isMerge: false,
+  parentShas: ['m1'],
+  files: [{ path: 'frontend/src/lib/repoTree.ts', changeType: 'M' }],
+  truncatedFileCount: 0,
+  tickets: [{ id: 't-1', number: 41, name: 'A ticket', source: 'reported' }],
+};
+
+const branchDetail = {
+  id: 'b-feat',
+  name: 'feature',
+  isTrunk: false,
+  state: 'MERGED',
+  forkedFromBranchName: 'main',
+  lastSyncedAt: '2026-08-21T19:40:00.000Z',
+  commitCount: 1,
+  commitMessages: ['Feature work'],
+  files: [{ path: 'frontend/src/lib/repoTree.ts', changeType: 'M' }],
+  truncatedFileCount: 0,
+  tickets: [{ id: 't-1', number: 41, name: 'A ticket', source: 'reported' }],
+};
+
+const ROUTES: Record<string, unknown> = {
+  '/api/v1/projects/p1': project,
+  '/api/v1/projects/p1/git-history': history,
+  '/api/v1/projects/p1/git-history/commits/f1': commitDetail,
+  '/api/v1/projects/p1/git-history/branches/b-feat': branchDetail,
+};
+
+describe('RepoPage — read-only (T072 / FR-003, constitution Principle I)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('issues only GET requests while rendering the tree and opening both modals', async () => {
+    const recorded: RecordedRequest[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        // A caller that omits `method` is a GET by the fetch spec, so record
+        // it as one rather than as "unknown".
+        recorded.push({ url, method: init?.method ?? 'GET' });
+        const key = Object.keys(ROUTES).find((k) => url.endsWith(k));
+        return Promise.resolve({
+          ok: key !== undefined,
+          status: key !== undefined ? 200 : 404,
+          json: () =>
+            Promise.resolve(
+              key !== undefined ? ROUTES[key] : { error: { code: 'NOT_FOUND', message: 'no route' } },
+            ),
+        } as unknown as Response);
+      }),
+    );
+
+    // Real implementations, real methods -- not the module mock's stand-ins.
+    vi.mocked(api).mockImplementation(realApi.api as unknown as typeof api);
+    vi.mocked(getGitHistory).mockImplementation(realApi.getGitHistory);
+    vi.mocked(getGitCommitDetail).mockImplementation(realApi.getGitCommitDetail);
+    vi.mocked(getGitBranchDetail).mockImplementation(realApi.getGitBranchDetail);
+
+    const user = userEvent.setup();
+    render(<RepoPage />);
+
+    await screen.findAllByTestId('repo-commit');
+
+    await user.click(screen.getByRole('button', { name: 'Commit f1 on feature' }));
+    expect(await screen.findByTestId('commit-message')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+
+    await user.click(screen.getByRole('button', { name: 'Branch feature' }));
+    expect(await screen.findByTestId('branch-description')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+
+    // The screen and BOTH modals really were exercised -- otherwise "no
+    // non-GET request" would be vacuously true.
+    expect(recorded.some((r) => r.url.endsWith('/git-history'))).toBe(true);
+    expect(recorded.some((r) => r.url.endsWith('/git-history/commits/f1'))).toBe(true);
+    expect(recorded.some((r) => r.url.endsWith('/git-history/branches/b-feat'))).toBe(true);
+    expect(recorded.length).toBeGreaterThanOrEqual(4);
+
+    // FR-003: only GET. Asserted per request so the failure message names the
+    // offending URL and method.
+    for (const request of recorded) {
+      expect({ url: request.url, method: request.method }).toEqual({
+        url: request.url,
+        method: 'GET',
+      });
+    }
+    expect([...new Set(recorded.map((r) => r.method))]).toEqual(['GET']);
   });
 });
