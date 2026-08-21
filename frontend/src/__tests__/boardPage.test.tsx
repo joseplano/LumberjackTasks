@@ -121,6 +121,20 @@ describe('ProjectBoardPage', () => {
     expect(api).toHaveBeenCalledWith('/projects/p1/metrics');
   });
 
+  // T041 (FR-001, SC-001): the board header must offer a View repo control
+  // alongside View backlog and Add ticket, linking to the project's repo
+  // route.
+  it('shows a View repo control in the header alongside View backlog and Add ticket', async () => {
+    mockLoadCalls();
+    render(<ProjectBoardPage />);
+    await screen.findByText('Anima Machina');
+
+    const viewRepoLink = screen.getByRole('link', { name: 'View repo' });
+    expect(viewRepoLink).toHaveAttribute('href', '/projects/p1/repo');
+    expect(screen.getByRole('link', { name: 'View backlog' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add ticket' })).toBeInTheDocument();
+  });
+
   it('shows the error state when loading fails', async () => {
     vi.mocked(api).mockRejectedValue(new Error('Project not found'));
     render(<ProjectBoardPage />);
