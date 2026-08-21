@@ -1,5 +1,5 @@
 import { clearToken, getToken } from './auth';
-import type { GitHistoryResponse } from './types';
+import type { GitBranchDetail, GitCommitDetail, GitHistoryResponse } from './types';
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -49,4 +49,16 @@ export async function api<T>(
 // Principle I: the frontend is an HTTP consumer only).
 export function getGitHistory(projectId: string): Promise<GitHistoryResponse> {
   return api<GitHistoryResponse>(`/projects/${projectId}/git-history`);
+}
+
+// T053/T058: typed fetchers for contracts/http-api.md sections 2 and 3.
+// Like `getGitHistory` these go through the shared `api` helper and inherit
+// its default `GET` -- the repository view issues nothing else (FR-003,
+// constitution Principle I). T072 asserts that executably.
+export function getGitCommitDetail(projectId: string, sha: string): Promise<GitCommitDetail> {
+  return api<GitCommitDetail>(`/projects/${projectId}/git-history/commits/${sha}`);
+}
+
+export function getGitBranchDetail(projectId: string, branchId: string): Promise<GitBranchDetail> {
+  return api<GitBranchDetail>(`/projects/${projectId}/git-history/branches/${branchId}`);
 }

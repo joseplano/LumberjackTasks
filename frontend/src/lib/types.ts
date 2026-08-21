@@ -146,3 +146,68 @@ export interface GitHistoryResponse {
   branches: GitHistoryBranch[];
   commits: GitHistoryCommit[];
 }
+
+// Feature 004: the two detail payloads (contracts/http-api.md sections 2 and 3).
+// `BranchState` is reused from branchColor.ts rather than redeclared, so the
+// colour rules and the modals can never drift apart.
+
+/** A changed file. The change kinds mirror the backend's `GitFileChange`
+ * enum: Added, Modified, Deleted, Renamed. */
+export type GitFileChangeType = 'A' | 'M' | 'D' | 'R';
+
+export interface GitFileRef {
+  path: string;
+  changeType: GitFileChangeType;
+}
+
+/**
+ * A ticket association. `source` is ALWAYS present (contract section 2 rule 4):
+ * it is the machine-readable half of D9 -- an inference is never presented as
+ * reported data (FR-016/FR-025). The UI half is `GitTicketList`.
+ */
+export type GitTicketSource = 'reported' | 'inferred';
+
+export interface GitTicketRef {
+  id: string;
+  number: number;
+  name: string;
+  source: GitTicketSource;
+}
+
+/** `GET /projects/:projectId/git-history/commits/:sha` (section 2). */
+export interface GitCommitDetail {
+  sha: string;
+  branchId: string;
+  branchName: string;
+  message: string;
+  authorName: string;
+  committedAt: string;
+  pushed: boolean;
+  isMerge: boolean;
+  parentShas: string[];
+  /** At most 500 entries (FR-023), ordered by `path` ascending. */
+  files: GitFileRef[];
+  /** `> 0` means `files` is incomplete: the client MUST say how many more
+   * files exist rather than present the list as complete (FR-017). */
+  truncatedFileCount: number;
+  tickets: GitTicketRef[];
+}
+
+/** `GET /projects/:projectId/git-history/branches/:branchId` (section 3).
+ * There is deliberately no authored `description` field: the modal composes
+ * one client-side from `name`, `state` and `commitMessages` (rule 4). */
+export interface GitBranchDetail {
+  id: string;
+  name: string;
+  isTrunk: boolean;
+  state: BranchState;
+  forkedFromBranchName: string | null;
+  lastSyncedAt: string;
+  /** The true total, which may exceed `commitMessages.length` (rule 5). */
+  commitCount: number;
+  /** Newest first, capped at 50 entries. */
+  commitMessages: string[];
+  files: GitFileRef[];
+  truncatedFileCount: number;
+  tickets: GitTicketRef[];
+}

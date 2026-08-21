@@ -6,6 +6,7 @@ import { useParams } from 'next/navigation';
 import { api, getGitHistory } from '@/lib/api';
 import type { GitHistoryResponse, ProjectDetail } from '@/lib/types';
 import RepoTree from '@/components/RepoTree';
+import CommitDetailModal from '@/components/CommitDetailModal';
 
 // T047 (FR-002, FR-003): a read-only view of the project's git history.
 // GET-only -- it never creates, modifies or deletes any domain state
@@ -15,6 +16,9 @@ export default function RepoPage() {
   const [project, setProject] = useState<ProjectDetail | null>(null);
   const [history, setHistory] = useState<GitHistoryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Selection lives here, not in RepoTree: the tree stays presentational and
+  // reports selections upward through its existing props (T053/T058).
+  const [selectedSha, setSelectedSha] = useState<string | null>(null);
 
   useEffect(() => {
     api<ProjectDetail>(`/projects/${id}`).then(setProject).catch(() => setProject(null));
@@ -55,8 +59,15 @@ export default function RepoPage() {
           buildRepoTree's width/height) can be wider than its container and
           the scrollbar sits along the bottom of the tree. */}
       <div className="overflow-x-auto rounded-omarchy border border-border bg-surface p-4">
-        <RepoTree branches={history.branches} commits={history.commits} />
+        <RepoTree
+          branches={history.branches}
+          commits={history.commits}
+          onCommitSelect={setSelectedSha}
+        />
       </div>
+      {selectedSha && (
+        <CommitDetailModal projectId={id} sha={selectedSha} onClose={() => setSelectedSha(null)} />
+      )}
     </div>
   );
 }
