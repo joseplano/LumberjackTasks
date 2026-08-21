@@ -1,5 +1,6 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import type { GitBranchState, GitFileChange } from '@prisma/client';
+import { syncGitHistory } from '../services/gitHistory';
 
 /**
  * Response types for the four repository-history endpoints of feature
@@ -9,8 +10,10 @@ import type { GitBranchState, GitFileChange } from '@prisma/client';
  * Dates are ISO 8601 strings: these describe what goes over the wire after
  * `res.json()`, not the Prisma row shapes.
  *
- * The router is deliberately empty for now. It exists so the module has a valid
- * default export to mount; mounting it in `src/app.ts` is T028.
+ * The router is mounted at `/api/v1/projects/:projectId/git-history` in
+ * `src/app.ts`, below `app.use('/api/v1', requireAuth)`, so it inherits
+ * authentication like every other project route. The three GET endpoints are
+ * later phases; `POST /sync` is the only write path in the feature.
  */
 
 /** A ticket association. `source` is ALWAYS present: contracts rule 4 of
@@ -120,6 +123,21 @@ export interface GitHistorySyncResponse {
   lastSyncedAt: string;
 }
 
-const router = Router();
+type ProjectParams = { projectId: string };
+
+// Express 5 does not merge parent params by default, and this router is mounted
+// under `/api/v1/projects/:projectId/git-history` -- same as every other project
+// sub-router in this repository (see routes/columns.ts, routes/projectTickets.ts).
+const router = Router({ mergeParams: true });
+
+/** `POST /api/v1/projects/:projectId/git-history/sync` (contract section 4).
+ * The service owns validation, the transaction and the idempotent upserts; this
+ * handler only shuttles the count envelope back. Errors thrown by the service
+ * are `ApiError`s and are rendered by `middleware/errors.ts`; Express 5 forwards
+ * a rejected async handler there on its own. */
+router.post('/sync', async (req: Request<ProjectParams>, res) => {
+  const result: GitHistorySyncResponse = await syncGitHistory(req.params.projectId, req.body);
+  res.json(result);
+});
 
 export default router;
