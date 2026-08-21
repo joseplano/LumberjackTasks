@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { BRANCH_COLOR_TOKEN } from '@/lib/branchColorToken';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
@@ -120,9 +121,19 @@ describe('RepoPage', () => {
     expect(commitFor('m2')).toHaveAttribute('data-color', 'blue');
     expect(commitFor('f1')).toHaveAttribute('data-color', 'grey');
 
-    // T046: commit circles are reachable by keyboard with an accessible
-    // name identifying which commit.
+    // Colours must resolve through the shared BRANCH_COLOR_TOKEN map to a
+    // themeable CSS custom property, never a hard-coded hex (SC-001a) -- a
+    // `data-color="blue"` assertion alone can't catch a `fill="#0000ff"`
+    // regression, so assert the rendered `fill` directly too.
+    expect(commitFor('m1')).toHaveAttribute('fill', BRANCH_COLOR_TOKEN.blue);
+    expect(commitFor('f1')).toHaveAttribute('fill', BRANCH_COLOR_TOKEN.grey);
+    expect(laneFor('b-main')).toHaveAttribute('stroke', BRANCH_COLOR_TOKEN.blue);
+    expect(laneFor('b-feat')).toHaveAttribute('stroke', BRANCH_COLOR_TOKEN.grey);
+
+    // T046: commit circles and branch lanes are reachable by keyboard with
+    // an accessible name identifying which commit/branch.
     expect(screen.getByRole('button', { name: 'Commit m1 on main' })).toHaveAttribute('tabindex', '0');
+    expect(screen.getByRole('button', { name: 'Branch feature' })).toHaveAttribute('tabindex', '0');
   });
 
   it('shows the error state when loading fails', async () => {

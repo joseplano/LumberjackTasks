@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { buildRepoTree, type RepoTreeBranch, type RepoTreeCommit } from '@/lib/repoTree';
 import { BRANCH_COLOR_TOKEN } from '@/lib/branchColorToken';
 
@@ -27,7 +28,10 @@ function shortSha(sha: string): string {
  * (US3/US4) can be reached from the keyboard as well as the pointer.
  */
 export default function RepoTree({ branches, commits, onCommitSelect, onBranchSelect }: RepoTreeProps) {
-  const { lanes, nodes, edges, width, height } = buildRepoTree({ branches, commits });
+  const { lanes, nodes, edges, width, height } = useMemo(
+    () => buildRepoTree({ branches, commits }),
+    [branches, commits],
+  );
 
   const branchNameById = new Map(branches.map((b) => [b.id, b.name]));
   const nodeBySha = new Map(nodes.map((n) => [n.sha, n]));
@@ -50,7 +54,7 @@ export default function RepoTree({ branches, commits, onCommitSelect, onBranchSe
 
   return (
     <svg
-      role="img"
+      role="group"
       aria-label="Repository commit history"
       width={svgWidth}
       height={svgHeight}
@@ -84,13 +88,13 @@ export default function RepoTree({ branches, commits, onCommitSelect, onBranchSe
       })}
 
       {/* FR-007: fork/merge connections derived from buildRepoTree's edges. */}
-      {edges.map((edge) => {
+      {edges.map((edge, i) => {
         const from = nodeBySha.get(edge.fromSha);
         const to = nodeBySha.get(edge.toSha);
         if (!from || !to) return null;
         return (
           <line
-            key={`${edge.fromSha}-${edge.toSha}`}
+            key={`${edge.kind}-${edge.fromSha}-${edge.toSha}-${i}`}
             data-testid="repo-edge"
             data-kind={edge.kind}
             x1={from.x + PADDING}
