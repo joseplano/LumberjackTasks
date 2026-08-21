@@ -57,7 +57,7 @@ The merged check comes first, always. The dirty-tree test applies only to the br
 
 isTrunk is true only for main, and only for one branch.
 
-Commits must be sent in batches of at most 50; a 413 PAYLOAD_TOO_LARGE response means send fewer.
+Commits must be sent in batches of at most 50; a 413 PAYLOAD_TOO_LARGE response means send fewer commits in that call. A batch of one commit is the floor: if a single commit still gets a 413 on its own, send fewer files for that commit and add the difference to its truncatedFileCount, so the remainder is still reported.
 
 Reporting ticketIds is preferred; omitting them causes the screen to fall back to inferring tickets by branch and to label them as inferred.
 

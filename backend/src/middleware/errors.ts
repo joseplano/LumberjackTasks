@@ -31,12 +31,24 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
   // falls through to 500 INTERNAL / "Unexpected error", so a sync would fail
   // without saying why -- which FR-020 and constitution Principle IV forbid.
   // See specs/004-view-repo-git-tree/contracts/http-api.md section 4, rule 10.
+  // The second sentence exists because the first one has a floor. A batch of
+  // ONE commit cannot be split further, so a single commit whose own `files`
+  // array exceeds the limit would be permanently unsyncable if "send fewer
+  // commits" were the only remedy offered. The escape hatch is already in the
+  // design -- report fewer `files` and carry the difference in
+  // `truncatedFileCount` (contract section 4 rule 6, FR-023/FR-017) -- so the
+  // message names it rather than leaving the caller in a dead end. The
+  // remainder is always REPORTED, never silently dropped (constitution
+  // Principle IV). Keep this wording in step with
+  // plugin/skills/ticket-sync/SKILL.md.
   if (isEntityTooLarge(err)) {
     res.status(413).json({
       error: {
         code: 'PAYLOAD_TOO_LARGE',
         message:
-          'Request body is too large. Split the batch and send fewer commits per request (at most 50).',
+          'Request body is too large. Split the batch and send fewer commits per request (at most 50). ' +
+          'If a single commit still exceeds the limit on its own, send fewer files for that commit ' +
+          'and add the difference to its truncatedFileCount -- never drop the remainder silently.',
       },
     });
     return;

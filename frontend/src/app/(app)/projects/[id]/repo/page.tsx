@@ -21,15 +21,34 @@ type Selection = { kind: 'commit'; sha: string } | { kind: 'branch'; branchId: s
 export default function RepoPage() {
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<ProjectDetail | null>(null);
+  const [projectError, setProjectError] = useState<string | null>(null);
   const [history, setHistory] = useState<GitHistoryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Selection lives here, not in RepoTree: the tree stays presentational and
   // reports selections upward through its existing props (T053/T058).
   const [selection, setSelection] = useState<Selection>(null);
 
-  useEffect(() => {
-    api<ProjectDetail>(`/projects/${id}`).then(setProject).catch(() => setProject(null));
+  // Fix wave (Minor 6): this used to be `.catch(() => setProject(null))`, which
+  // dropped the project name out of the header on a transient failure and said
+  // nothing about it. On a screen whose whole subject is that an absence must
+  // never be presented as a fact (FR-029/FR-033), a swallowed error is exactly
+  // the wrong default: the header would read "Repository" as if that were the
+  // project's whole identity. The failure is now named and retryable. It stays
+  // NON-fatal -- the history is what this screen is for, and it loads
+  // independently -- so it degrades the header rather than replacing the page.
+  const loadProject = useCallback(async () => {
+    try {
+      setProject(await api<ProjectDetail>(`/projects/${id}`));
+      setProjectError(null);
+    } catch (err) {
+      setProject(null);
+      setProjectError(err instanceof Error ? err.message : 'Failed to load the project');
+    }
   }, [id]);
+
+  useEffect(() => {
+    loadProject();
+  }, [loadProject]);
 
   const load = useCallback(async () => {
     try {
@@ -44,18 +63,77 @@ export default function RepoPage() {
     load();
   }, [load]);
 
+  // Fix wave (Minor 6): the header is rendered by EVERY state, the failure
+  // ones included. It previously returned before the "Back to board" link, so
+  // a failed load left the user on a dead screen with no way out and no way to
+  // retry -- the one state where navigation matters most.
+  const header = (
+    <div className="mb-4 flex items-start justify-between gap-2">
+      <div className="min-w-0">
+        <h1 className="text-2xl font-semibold text-fg">
+          Repository{project ? ` — ${project.name}` : ''}
+        </h1>
+        {/* The project fetch failing is reported, not hidden. It is a separate
+            failure from the history fetch below and must not be conflated with
+            it: the history may well have loaded fine. */}
+        {projectError !== null && (
+          <p data-testid="repo-project-error" className="mt-0.5 text-sm text-danger">
+            The project name could not be loaded: {projectError}{' '}
+            <button
+              type="button"
+              data-testid="repo-project-retry"
+              onClick={loadProject}
+              className="underline hover:no-underline"
+            >
+              Try again
+            </button>
+          </p>
+        )}
+        {/* FR-028/SC-008: shown whenever there is a real timestamp, and
+            never invented when there is not. */}
+        {history?.lastSyncedAt != null && (
+          <p className="mt-0.5 text-sm text-fg-muted">
+            Last synced{' '}
+            <time data-testid="last-synced" dateTime={history.lastSyncedAt}>
+              {new Date(history.lastSyncedAt).toLocaleString()}
+            </time>
+          </p>
+        )}
+      </div>
+      <Link
+        href={`/projects/${id}`}
+        className="shrink-0 rounded-omarchy border border-border bg-surface px-3 py-1.5 text-sm text-fg hover:border-accent"
+      >
+        Back to board
+      </Link>
+    </div>
+  );
+
   // T063 (FR-033, SC-012): three states that must never be conflated.
   //
   // 1. FAILED. Named reason, from the ApiError the backend produced -- never a
   //    generic apology, and never rendered as an empty history.
   if (error) {
     return (
-      <p
-        data-testid="repo-error"
-        className="rounded-omarchy border border-danger bg-surface p-3 text-danger"
-      >
-        {error}
-      </p>
+      <div>
+        {header}
+        <p
+          data-testid="repo-error"
+          className="rounded-omarchy border border-danger bg-surface p-3 text-danger"
+        >
+          {error}
+        </p>
+        {/* A retry, not a sync: this re-issues the same GET and remains
+            read-only (constitution Principle I, FR-003). */}
+        <button
+          type="button"
+          data-testid="repo-retry"
+          onClick={load}
+          className="mt-3 rounded-omarchy border border-border bg-surface px-3 py-1.5 text-sm text-fg hover:border-accent"
+        >
+          Try again
+        </button>
+      </div>
     );
   }
   // 2. LOADING. The convention the other project sub-routes already use (see
@@ -63,9 +141,12 @@ export default function RepoPage() {
   //    in flight is not an absence of history.
   if (!history) {
     return (
-      <p data-testid="repo-loading" className="text-fg-muted">
-        Loading…
-      </p>
+      <div>
+        {header}
+        <p data-testid="repo-loading" className="text-fg-muted">
+          Loading…
+        </p>
+      </div>
     );
   }
 
@@ -77,29 +158,7 @@ export default function RepoPage() {
 
   return (
     <div>
-      <div className="mb-4 flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold text-fg">
-            Repository{project ? ` — ${project.name}` : ''}
-          </h1>
-          {/* FR-028/SC-008: shown whenever there is a real timestamp, and
-              never invented when there is not. */}
-          {history.lastSyncedAt !== null && (
-            <p className="mt-0.5 text-sm text-fg-muted">
-              Last synced{' '}
-              <time data-testid="last-synced" dateTime={history.lastSyncedAt}>
-                {new Date(history.lastSyncedAt).toLocaleString()}
-              </time>
-            </p>
-          )}
-        </div>
-        <Link
-          href={`/projects/${id}`}
-          className="shrink-0 rounded-omarchy border border-border bg-surface px-3 py-1.5 text-sm text-fg hover:border-accent"
-        >
-          Back to board
-        </Link>
-      </div>
+      {header}
 
       {neverSynced ? (
         // FR-029: explain how to sync. INSTRUCTIONS, never a control -- a

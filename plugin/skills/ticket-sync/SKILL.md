@@ -137,7 +137,9 @@ repository already contains.
   branch is dirty; that information does not exist.
 - **Batching.** Send at most 50 commits per `sync_git_history` call. Loop, calling it repeatedly,
   until the whole history (or the whole backfill) is loaded. A `413 PAYLOAD_TOO_LARGE` means send
-  fewer commits in that call, not fewer files per commit.
+  fewer commits in that call — try that first. A batch of one commit is the floor, so if a *single*
+  commit still gets a `413` on its own, send fewer `files` for that commit and add the difference to
+  its `truncatedFileCount`. The remainder is always reported that way, never dropped silently.
 - **First-parent attribution never moves (D8).** A commit belongs to the branch it was introduced
   on. If a commit's `sha` was already synced under one `branchName`, reporting it again under a
   different `branchName` will **not** move it — the backend keeps the original attribution and

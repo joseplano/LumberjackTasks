@@ -146,6 +146,34 @@ describe('git history', () => {
       expect(message.toLowerCase()).toContain('fewer commits');
     });
 
+    // Fix wave, Important 2. "Send fewer commits" has a floor: a batch of ONE
+    // commit cannot be split. A single commit whose own `files` array pushes
+    // the body past 100 kB would then be permanently unsyncable, with the only
+    // named remedy already exhausted. The message must also point at the
+    // escape hatch the design already provides -- fewer `files`, remainder in
+    // `truncatedFileCount` (contract section 4 rule 6, FR-023/FR-017) -- and
+    // must keep that remainder REPORTED rather than dropped (constitution
+    // Principle IV). Keep this in step with plugin/skills/ticket-sync/SKILL.md,
+    // which is pinned by plugin/tests/plugin-config.test.mjs.
+    it('also names the remedy for a SINGLE commit that is too large on its own', async () => {
+      const res = await request(app)
+        .post(`/api/v1/projects/${projectId}/git-history/sync`)
+        .set(auth)
+        .set('Content-Type', 'application/json')
+        .send(oversizeBody());
+
+      expect(res.status).toBe(413);
+      const message = String(res.body.error.message);
+      // Both remedies, and in that order: split the batch first; when one
+      // commit still will not fit, send fewer files for that commit.
+      expect(message.toLowerCase()).toContain('fewer commits');
+      expect(message.toLowerCase()).toContain('fewer files');
+      expect(message.indexOf('fewer commits')).toBeLessThan(message.indexOf('fewer files'));
+      expect(message).toContain('truncatedFileCount');
+      // The remainder is reported, never silently dropped.
+      expect(message.toLowerCase()).toContain('never drop the remainder');
+    });
+
     it('leaves a body under the limit alone (the 100kb control is unchanged)', async () => {
       const res = await request(app)
         .post(`/api/v1/projects/${projectId}/git-history/sync`)
@@ -1569,6 +1597,202 @@ describe('git history', () => {
       const res = await list('11111111-1111-4111-8111-111111111111');
       expect(res.status).toBe(404);
       expect(res.body.error.code).toBe('NOT_FOUND');
+    });
+  });
+  // ---------------------------------------------------------------------------
+  // Fix wave, Important 1 -- the four routes of this feature are protected by
+  // exactly ONE line: `app.use('/api/v1', requireAuth)` in src/app.ts, which
+  // sits ABOVE `app.use('/api/v1/projects/:projectId/git-history', ...)`.
+  // Nothing pinned that ordering. Moving the mount two lines up would ship a
+  // fully unauthenticated `POST .../git-history/sync` -- the system's only new
+  // write endpoint -- with a completely green suite. These cases pin it.
+  //
+  // The project is seeded through the AUTHENTICATED path in beforeEach, so
+  // every unauthenticated request below addresses a route that WOULD answer
+  // 200 if it ran. Without that, a 401 could just as well come from an empty
+  // database, and the test would not discriminate.
+  // ---------------------------------------------------------------------------
+  describe('requireAuth covers all four routes (fix wave, Important 1)', () => {
+    let seededBranchId: string;
+
+    beforeEach(async () => {
+      const seed = await sync({ branches: [trunk], commits: [validCommit({ sha: sha(1) })] });
+      expect(seed.status).toBe(200);
+      seededBranchId = await branchIdOf(trunk.name);
+    });
+
+    /** A wholly valid batch of work that is NEW relative to the seed: were it
+     * ever to reach the service, it would upsert a branch, a commit and a file
+     * row. That is what makes the "zero rows" assertion below mean something. */
+    const newWork = () => ({
+      branches: [feature],
+      commits: [
+        validCommit({
+          sha: sha(2),
+          branchName: feature.name,
+          files: [{ path: 'src/services/gitHistory.ts', changeType: 'M' }],
+        }),
+      ],
+    });
+
+    it('POST /sync answers 401 UNAUTHENTICATED with no Authorization header', async () => {
+      const res = await request(app).post(syncUrl(projectId)).send(newWork());
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('UNAUTHENTICATED');
+    });
+
+    it('POST /sync writes ZERO rows with no Authorization header', async () => {
+      const before = await gitRowCounts();
+
+      const res = await request(app).post(syncUrl(projectId)).send(newWork());
+      expect(res.status).toBe(401);
+      // The status alone proves nothing: an endpoint that wrote first and
+      // rejected afterwards would still answer 401. The counts are the proof.
+      expect(await gitRowCounts()).toEqual(before);
+
+      // The control. The very same body, sent WITH a token, does write -- so
+      // "zero rows" above is the auth boundary holding, not a body that had
+      // nothing to write.
+      const authorised = await sync(newWork());
+      expect(authorised.status).toBe(200);
+      const after = await gitRowCounts();
+      expect(after.branches).toBeGreaterThan(before.branches);
+      expect(after.commits).toBeGreaterThan(before.commits);
+      expect(after.files).toBeGreaterThan(before.files);
+    });
+
+    it('the three GET endpoints answer 401 with no Authorization header', async () => {
+      const urls = [
+        historyUrl(projectId),
+        commitDetailUrl(projectId, sha(1)),
+        branchDetailUrl(projectId, seededBranchId),
+      ];
+      for (const url of urls) {
+        const res = await request(app).get(url);
+        // Asserted as one object so a failure names the offending URL.
+        expect({ url, status: res.status, code: res.body.error?.code }).toEqual({
+          url,
+          status: 401,
+          code: 'UNAUTHENTICATED',
+        });
+      }
+    });
+
+    it('all three GETs answer 200 WITH a token, so the 401s above are about auth alone', async () => {
+      expect((await list()).status).toBe(200);
+      expect((await commitDetail(sha(1))).status).toBe(200);
+      expect((await branchDetail(seededBranchId)).status).toBe(200);
+    });
+
+    it('rejects a bearer token that is not a valid JWT, and still writes nothing', async () => {
+      const res = await request(app)
+        .post(syncUrl(projectId))
+        .set('Authorization', 'Bearer not-a-real-token')
+        .send(newWork());
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe('UNAUTHENTICATED');
+      expect(await prisma.gitCommit.count({ where: { sha: sha(2) } })).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Fix wave, Gap -- the section 1 / 2 / 3 disagreement, pinned exactly as the
+  // code behaves TODAY. This block changes nothing and fixes nothing.
+  //
+  // The write path's 500-file cap is per CALL (section 4 rule 6) and sync never
+  // deletes (rule 2 / FR-032). So two legal batches, same sha, 500 disjoint
+  // paths each, leave 1000 stored rows on one commit. From there the three read
+  // endpoints disagree, and the contract does not say which of them is right:
+  //
+  //   section 1 rule 4  `fileCount` is the number of STORED rows and
+  //     `fileCount + truncatedFileCount` is "the real total". Here that reads
+  //     1000 -- yet had the two batches re-reported the SAME 500 paths, the
+  //     stored count would be 500 and the arithmetic would give a different
+  //     answer for an identical commit. The rule stops describing reality.
+  //   section 2 rule 1  commit detail caps at 500 on READ, so it shows 500 of
+  //     the 1000 and reports the list as complete (`truncatedFileCount` is 0).
+  //   section 3 rule 1  branch detail has NO cap and returns the whole union:
+  //     all 1000.
+  //
+  // Do NOT "fix" this by capping the branch endpoint, or by recomputing
+  // `truncatedFileCount` on read. Which section is authoritative is a product
+  // decision. This test exists so the disagreement is visible and so that
+  // changing one side without the other fails loudly, here, with this comment.
+  // ---------------------------------------------------------------------------
+  describe('re-sync with a different file set (fix wave, Gap)', () => {
+    const paths = (prefix: string) =>
+      Array.from({ length: 500 }, (_, i) => ({
+        path: `${prefix}/${i.toString().padStart(3, '0')}.ts`,
+        changeType: 'A',
+      }));
+
+    /** The stored rows for the one sha, read straight from the database. */
+    async function storedFileRows() {
+      const commit = await prisma.gitCommit.findFirstOrThrow({
+        where: { projectId, sha: sha(1) },
+        select: { id: true },
+      });
+      return prisma.gitCommitFile.count({ where: { commitId: commit.id } });
+    }
+
+    beforeEach(async () => {
+      // Both calls are legal: each sends exactly 500 files, the per-call cap.
+      // The prefixes interleave under an ascending sort, so "a/..." sorts
+      // first although it was written second.
+      const first = await sync({
+        branches: [trunk],
+        commits: [validCommit({ sha: sha(1), files: paths('b'), truncatedFileCount: 0 })],
+      });
+      expect(first.status).toBe(200);
+      const second = await sync({
+        branches: [trunk],
+        commits: [validCommit({ sha: sha(1), files: paths('a'), truncatedFileCount: 0 })],
+      });
+      expect(second.status).toBe(200);
+    });
+
+    it('leaves MORE than 500 stored rows on the one sha (sync is additive, FR-032)', async () => {
+      const stored = await storedFileRows();
+      expect(stored).toBeGreaterThan(500);
+      expect(stored).toBe(1000);
+    });
+
+    it('GET /commits/:sha still returns exactly 500 -- the read path caps (section 2 rule 1)', async () => {
+      const res = await commitDetail(sha(1));
+      expect(res.status).toBe(200);
+      expect(res.body.files).toHaveLength(500);
+      // The first 500 by ascending path: the "a/..." batch, written second.
+      expect(res.body.files.map((f: { path: string }) => f.path)).toEqual(
+        paths('a').map((f) => f.path),
+      );
+      // And it reports the list as complete, because `truncatedFileCount` is
+      // the reporter's own field and the read cap does not touch it (rule 2).
+      expect(res.body.truncatedFileCount).toBe(0);
+    });
+
+    it('GET / reports fileCount 1000, so section 1 rule 4 arithmetic no longer holds', async () => {
+      const res = await list();
+      expect(res.status).toBe(200);
+      const commit = res.body.commits.find((c: { sha: string }) => c.sha === sha(1));
+      expect(commit.fileCount).toBe(await storedFileRows());
+      expect(commit.truncatedFileCount).toBe(0);
+      // "The real total" per rule 4 -- 1000 -- against what endpoint 2 will
+      // ever show -- 500. Each is the current, intended behaviour of its own
+      // section; they cannot both be honest about the same commit.
+      expect(commit.fileCount + commit.truncatedFileCount).toBe(1000);
+      expect((await commitDetail(sha(1))).body.files).toHaveLength(500);
+    });
+
+    it('GET /branches/:branchId returns all 1000 -- section 3 has no cap', async () => {
+      const res = await branchDetail(await branchIdOf(trunk.name));
+      expect(res.status).toBe(200);
+      // The disagreement in one assertion: the same commit's files, through
+      // two endpoints, two different answers. Read the block comment above
+      // before changing either number.
+      expect({
+        viaCommitDetail: (await commitDetail(sha(1))).body.files.length,
+        viaBranchDetail: res.body.files.length,
+      }).toEqual({ viaCommitDetail: 500, viaBranchDetail: 1000 });
     });
   });
 });

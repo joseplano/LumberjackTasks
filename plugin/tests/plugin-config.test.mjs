@@ -162,3 +162,40 @@ test('every script the plugin ships imports only Node built-ins', () => {
     }
   }
 });
+// Fix wave, Important 2. The 100 kB body limit in backend/src/app.ts is a
+// denial-of-service control and is not raised, so the agent chunks instead.
+// "Send fewer commits, not fewer files per commit" had a floor nobody had
+// noticed: a batch of ONE commit cannot be split. A commit whose own `files`
+// array carries the body past the limit was therefore permanently unsyncable,
+// with this file explicitly forbidding the one remedy the design already
+// provides. Nothing at runtime would surface it -- the sync just keeps
+// answering 413 and the agent keeps doing the thing that cannot help.
+test('the skill leaves a way out of a 413 on a single oversized commit (FR-023, FR-017)', () => {
+  assert.doesNotMatch(
+    skill,
+    /not fewer files per commit/,
+    'SKILL.md must not forbid sending fewer files: for a one-commit batch that is the only remedy left',
+  );
+
+  // The batch-size remedy stays FIRST -- it is the right answer nearly always.
+  assert.match(
+    skill,
+    /413 PAYLOAD_TOO_LARGE`? means send\s+fewer commits/,
+    'SKILL.md must still name "send fewer commits" as the first response to a 413',
+  );
+
+  // ... and the escape hatch after it, for the case where that is exhausted.
+  assert.match(
+    skill,
+    /413[\s\S]{0,600}?fewer `files`[\s\S]{0,200}?`truncatedFileCount`/,
+    'SKILL.md must tell the agent that a single commit still hitting 413 sends fewer `files`, with the difference in `truncatedFileCount`',
+  );
+
+  // The remainder is REPORTED, never quietly dropped: a silently short file
+  // list presented as complete is exactly what FR-017 forbids.
+  assert.match(
+    skill,
+    /`truncatedFileCount`[\s\S]{0,200}?never dropped silently/,
+    'SKILL.md must say the remainder is reported, never dropped silently (FR-017)',
+  );
+});
