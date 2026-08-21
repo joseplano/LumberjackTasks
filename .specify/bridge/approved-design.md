@@ -1,157 +1,236 @@
-# Approved Design — Copy the branch URL, not just the branch name
+# Approved Design — View repo: a graphical tree of the repository history
 
-Status: APPROVED by human partner
+Status: APPROVED by human partner (2026-08-21)
 Bridge version: 3.1.0
-Classification: bounded (a scoped change to a flow that already exists in this repo)
+Classification: architectural (a new screen plus a data subsystem that does not exist today)
 
 ## Original feature idea
 
-> en los tickets, en el nombre del branch del repo en la opcion de copiar, que al
-> portapaleles te copie toda la url include el brabch asi podemos ir directamente
-> al branch al repo
+> Agrega la siguiente feature. En el proyecto: al lado del botón que dice crear un
+> nuevo ticket que exista otro botón que diga view repo. Al hacer click ahí se entra
+> en una pantalla que permite ver en forma de árbol la rama main de git y todas las
+> ramas creadas a modo de historia. La representación debe ser gráfica por lo tanto
+> debe representar un árbol la línea principal de main y las branches creadas; cada
+> branch tendrá un círculo pequeño que representará cada commit realizado. Al hacer
+> click en el círculo muestra una ventana modal con los tickets commiteados, los
+> archivos que lo componen y la fecha y por supuesto la descripción del commit. Al
+> hacer click en el branch muestra una ventana modal con todos los tickets y archivos
+> que van en ese branch y la descripción pertinente. Si la rama ya fue mergeada con
+> main se mostrará en color gris, si es activa o sea que todavía se está trabajando se
+> mostrará en verde. La main se mostrará en azul. Si la rama no está commiteada va en
+> amarillo, cuando se pushea a main y se mergea pasa a gris. El árbol se mostrará de
+> izquierda a derecha y existirá una barra en la parte inferior para poder desplazarla.
 
-Restated: the copy control in the ticket's branch block should put the full URL to
-that branch in the repository on the clipboard, so pasting it in a browser goes
-straight to the branch.
+Restated: the project board gains a `View repo` button that opens a read-only screen
+drawing the repository's branch/commit history as a left-to-right graphical tree, with
+per-commit and per-branch detail modals and a four-colour branch state scheme.
+
+## Findings from project exploration that constrain the design
+
+These are facts verified in the repository during brainstorming, not assumptions:
+
+1. The button next to which `View repo` must sit is labelled **`Add ticket`**, in the
+   project board header at `frontend/src/app/(app)/projects/[id]/page.tsx`, alongside a
+   `View backlog` link. `View repo` is a third control there.
+2. **Nothing in the stack can read a git repository today.** There is no `git` shell
+   invocation, no `simple-git` / `isomorphic-git` / `nodegit` dependency in `backend/`,
+   `mcp/`, `plugin/` or `frontend/`, and `docker-compose.yml` mounts no repository into
+   the backend container.
+3. The only git data in the database is `Project.gitRepoUrl` (a string) and
+   `Ticket.gitBranch` (a mirror of the branch the agent reported). The Prisma schema
+   states the rule explicitly: there is no generator and no read-time derivation; the
+   only writer is the agent. There are **no** commit, file, or merge-state tables.
+4. The frontend has **no graph/chart library** — its only UI dependency is `@dnd-kit/core`.
+5. The frontend has **no typecheck or lint script**. `next build` is the only type gate.
+6. Constitution v1.0.0 (ratified 2026-08-15) requires: frontend is an HTTP consumer only
+   and never a second write path (I); TypeScript plus tests for every behaviour change
+   (II, non-negotiable); single-tenant posture preserved and no implied per-user
+   isolation (III); no silent failures in plugin code (IV); a committed Prisma migration
+   for any schema change; README updated for user-visible behaviour.
 
 ## Branch topology decision (approved)
 
-Feature `002-ticket-git-branch-view` is committed (`18ff05a`) and pushed, but NOT
-merged into `main`. This feature depends on the copy control that 002 introduced.
-The user chose to **stack**: cut the new feature branch from
-`002-ticket-git-branch-view`, not from `main`. Two chained branches will need to be
-merged in order.
+Cut the canonical feature branch from **`main`**. Explicit human decision on 2026-08-21:
+the `View repo` control lives in the project board header, not in the ticket branch block
+that features 002 and 003 introduced, so 004 does not depend on them and must not become
+a third stacked branch. Features 002 and 003 remain pushed and unmerged; 004 merges
+independently.
 
 ## Decisions explicitly approved by the user
 
-1. **Scope is frontend-only.** No database, backend, or MCP change. `ProjectDetail`
-   extends `Project`, which already carries `gitRepoUrl`, and `TicketDetailModal`
-   already receives `project` as a prop, so the data is available without new
-   plumbing.
-2. **Empty-state behaviour** — when the project has no repository URL configured,
-   or a URL cannot be built from it, the button copies the branch name, exactly as
-   it does today. The control never becomes useless and never copies a broken URL.
-3. **Forge coverage** — GitHub, GitLab, Bitbucket and Azure DevOps are all
-   supported, each with its own branch-URL shape. An unrecognised host falls back
-   to the GitHub pattern.
-4. **The label always states what will be copied**, so pasting never surprises:
-   *Copy branch URL* when a URL will be copied, *Copy branch name* otherwise.
+### D1 — Scope stays whole, spanning four modules
+
+The feature touches `backend/` (schema, migration, routes), `mcp/` (a new tool),
+`plugin/` (agent instructions) and `frontend/` (screen, tree, two modals). The user was
+offered a split into 004 (data pipeline) + 005 (visual screen) and **chose to keep it as
+one feature**. Tasks must be ordered so the backend is verified before the SVG work
+starts.
+
+### D2 — The agent is the source of the git history
+
+A new MCP tool, `sync_git_history`, carries repository state the agent reads locally
+(`git log`, `git status`, `git branch --merged`) into the backend. This follows the
+existing rule that governs `gitBranch`: the agent is the only writer.
+
+Rejected alternatives (see below) were the forge API and a locally mounted repository.
+
+### D3 — Reporting is explicit, not hook-driven
+
+The agent syncs deliberately — the `ticket-sync` skill instructs it to sync on commit and
+on branch change. A hook shelling out to git on every tool use was rejected as heavy and
+prone to silent failure, which constitution principle IV forbids.
+
+### D4 — A full one-time backfill is in scope
+
+An import walks `git log --all` once and loads the history that already exists (`main`,
+`001`, `002`, `003`, their commits, files and merge points). It runs on the developer's
+machine, where the repository is. Without it the screen ships empty and delivers no value
+for weeks.
+
+### D5 — Four branch colours, with an explicit precedence rule
+
+The original idea contained a contradiction: a newly created branch with no commits is
+both *active* (green) and *not committed* (yellow). Resolved as:
+
+| Colour | State | Rule |
+|---|---|---|
+| Blue | `main` | The trunk is always blue, regardless of anything else |
+| Yellow | uncommitted | The branch has uncommitted working-tree changes, or has no commit of its own yet |
+| Green | active | Has commits, not merged into `main` |
+| Grey | merged | Has been merged into `main` |
+
+**Precedence:** merged wins over everything; `main` is always blue; otherwise dirty →
+yellow, else green.
+
+**Push is not a state.** The user's phrase "cuando se pushea a main y se mergea pasa a
+gris" is treated as describing the transition, not a fifth colour. Consequence accepted by
+the user: branches `002` and `003`, currently pushed but unmerged, render **green**.
+
+Yellow is a local, volatile state that only exists while the agent reports it — which is
+precisely why the forge API was rejected.
+
+### D6 — Data model: four new tables
+
+- `GitBranch` — name, project, is-trunk flag, originating branch, state
+  (`UNCOMMITTED` / `ACTIVE` / `MERGED`), last-synced timestamp.
+- `GitCommit` — sha, message, author, date, pushed flag, merge-commit flag, and **parent
+  SHAs**. Parents are what allow fork and merge edges to be drawn truthfully.
+- `GitCommitFile` — path and change type (`A` / `M` / `D` / `R`).
+- `GitCommitTicket` — explicit commit ↔ ticket link.
+
+A committed Prisma migration is required.
+
+### D7 — File list is capped at 500 per commit
+
+At most 500 files are stored per commit, with a truncation marker. The modal reports "and
+N more files" rather than being unbounded on a very large commit.
+
+### D8 — Commit-to-branch attribution never moves
+
+A commit is attributed to the branch it was introduced on (first parent) and is **never
+reassigned**, including when that branch is merged into `main`. History therefore does not
+rewrite itself and each lane keeps its circles.
+
+### D9 — Commit-to-ticket links, with honest inference
+
+The agent reports the tickets for each commit, since it knows which ones it touched. When
+no explicit report exists — the backfill case — the link is inferred by branch (tickets
+whose `gitBranch` matches) and **the modal says so**: marked as inferred by branch. An
+inference is never presented as reported data.
+
+### D10 — Rendering is hand-rolled SVG
+
+No new dependency. The geometry lives in a pure, separately testable function, apart from
+the component — the same pattern as `frontend/src/lib/branchUrl.ts` from feature 003.
+
+## Functional behaviour approved
+
+- A `View repo` button in the project board header, next to `View backlog` and
+  `Add ticket`, styled like `View backlog` (which is already a link).
+- A new route `/projects/[id]/repo`.
+- `main` renders as a horizontal blue line, left to right. Each branch is a lane below it,
+  starting at its fork commit and, when merged, rejoining `main`.
+- Each commit is a small circle in its lane, coloured by its branch's state.
+- The tree scrolls horizontally, with a scrollbar along the bottom.
+- Clicking a commit circle opens a modal with the commit description, date, committed
+  tickets and files.
+- Clicking a branch lane or label opens a modal with all of that branch's tickets, files
+  and description.
+- The header shows a **last-synced** timestamp. The screen is a mirror, not the truth.
+- When the project has never been synced, an empty state explains how to sync instead of
+  showing a blank canvas.
 
 ## Rejected alternatives and trade-offs
 
-- **Disabled button with a "configure the repository URL" notice** — rejected: it
-  removes a control that works today in order to explain a missing setting.
-- **Two buttons, one for the name and one for the URL** — rejected: the branch
-  block already holds an icon, the branch name, and an inheritance marker; a second
-  control crowds it.
-- **GitHub only** — rejected by the user in favour of full forge coverage, even
-  though the current repository is on GitHub.
-- **Cutting the branch from `main`** — rejected: `main` has neither the copy
-  control nor the branch field, so there would be nothing to modify.
-
-## Functional behaviour
-
-### New helper: `frontend/src/lib/branchUrl.ts`
-
-A pure function `buildBranchUrl(gitRepoUrl: string, branch: string): string | null`.
-
-**Normalisation of the stored project URL:**
-
-- Trim surrounding whitespace.
-- Convert the SSH form `git@host:owner/repo.git` to `https://host/owner/repo`.
-- Strip a trailing `.git` suffix.
-- Strip a trailing `/`.
-- If the result is not an `http` or `https` URL, return `null`.
-
-**Branch URL shape, selected by host:**
-
-| Forge | Pattern |
-|---|---|
-| GitHub | `<repo>/tree/<branch>` |
-| GitLab | `<repo>/-/tree/<branch>` |
-| Bitbucket | `<repo>/src/<branch>` |
-| Azure DevOps | `<repo>?version=GB<branch>` |
-| Unrecognised host | the GitHub pattern, as the most widespread |
-
-**Branch encoding:** slashes in a branch such as `feature/x` stay literal in the
-path segment, because that is what the forges expect. For Azure DevOps the branch
-travels in a query parameter and is therefore fully URL-encoded.
-
-### Copy control behaviour
-
-The copy mechanism is unchanged: `navigator.clipboard` with the hidden-textarea
-fallback for non-secure contexts, and the existing `Copiado` confirmation. Only the
-copied string changes.
-
-- `gitRepoUrl` configured and a URL can be built → copy the full branch URL; button
-  label and `title` read *Copy branch URL*.
-- Otherwise → copy the branch name, as today; label reads *Copy branch name*.
-
-The `aria-label` tracks the same text so the accessible name always matches what
-the control will copy.
+- **Forge API (GitHub/GitLab) as the source** — rejected: it cannot see uncommitted work,
+  making the yellow state impossible; it would require storing a token in the database;
+  it needs outbound network from a product the README declares localhost-only; and
+  commit-to-ticket linking would depend on parsing commit messages.
+- **Reading a locally mounted repository from the backend** — rejected: the backend runs
+  in Docker with no repository mounted, it would need per-machine mounting, and it would
+  give the backend command execution over arbitrary filesystem paths, colliding with
+  constitution principle III.
+- **Splitting into 004 (data) + 005 (screen)** — offered and declined by the user; 004
+  alone would produce nothing visible.
+- **A git-graph rendering library** — rejected: a new frontend dependency against a
+  constitution-pinned stack, for geometry that is a few dozen lines of SVG.
+- **A fifth colour for "pushed but not merged"** — not requested; deliberately out of scope.
 
 ## Edge cases discussed
 
-- `gitRepoUrl` empty (the current state of this very project) → branch name copied.
-- `gitRepoUrl` in SSH form → normalised to an https URL.
-- `gitRepoUrl` with a `.git` suffix or a trailing slash → both stripped.
-- `gitRepoUrl` holding something that is not a URL → `null`, branch name copied.
-- Branch containing slashes → slashes preserved in the path.
-- Azure DevOps → branch encoded, because it sits in a query parameter.
-- Unrecognised host → GitHub pattern rather than refusing to build a URL.
-- A ticket with no effective branch → the block already renders no copy control, so
-  nothing changes.
+- A branch that exists with no commits of its own → yellow (D5).
+- A branch both merged and dirty → merged wins; grey (D5 precedence).
+- A commit with thousands of files → stored list capped at 500 with a truncation marker (D7).
+- A merged branch's commits → keep their original lane, not reassigned to `main` (D8).
+- Backfilled commits with no explicit ticket report → inferred by branch and labelled as
+  inferred (D9).
+- A project that has never been synced → empty state with sync instructions.
+- Data staleness in general → surfaced as a last-synced timestamp rather than hidden.
 
 ## Architecture constraints agreed
 
-- Frontend-only change; the backend remains the single source of truth for data and
-  gains no new responsibility here.
-- The helper is a pure function in its own module so it can be tested without
-  rendering a component.
-- Follow the existing repository patterns for module layout and testing.
-- Plugin test suite, if touched, must run as `node --test plugin/tests/*.test.mjs`
-  on Windows.
+- The screen is **read-only**. It is not a second write path; the backend remains the
+  single source of truth (constitution I).
+- No tokens and no filesystem paths are stored in the database. Sync uses the existing
+  agent authentication path (constitution III).
+- Single-tenant posture is preserved; the screen must not imply per-user isolation or
+  ownership that does not exist.
+- New code is TypeScript with tests (constitution II).
+- The schema change ships with a committed Prisma migration.
+- `README.md` gains a section for the new user-visible behaviour.
 
 ## Success / acceptance criteria
 
-1. With a project whose `gitRepoUrl` points at a GitHub repository, opening a
-   ticket with a branch and pressing copy puts `<repo>/tree/<branch>` on the
-   clipboard.
-2. The same flow yields `<repo>/-/tree/<branch>` for GitLab, `<repo>/src/<branch>`
-   for Bitbucket, and `<repo>?version=GB<branch>` for Azure DevOps.
-3. An unrecognised host yields the GitHub pattern.
-4. With `gitRepoUrl` empty, pressing copy puts the branch name on the clipboard and
-   the label reads *Copy branch name*.
-5. With a URL available, the label and `aria-label` read *Copy branch URL*.
-6. A `gitRepoUrl` in SSH form, or carrying a `.git` suffix or trailing slash, still
-   produces a correct https branch URL.
-7. A branch containing slashes produces a URL with those slashes intact.
-8. The non-secure-context fallback still copies successfully.
+1. The project board header shows a `View repo` control that opens `/projects/[id]/repo`.
+2. After a backfill on this repository, the screen draws `main` plus the existing feature
+   branches, each commit as a circle in its lane, left to right, horizontally scrollable.
+3. Branch colours follow D5, including its precedence rule; `002` and `003` render green
+   in their current pushed-but-unmerged state.
+4. Clicking a commit circle opens a modal showing that commit's description, date, files
+   and tickets.
+5. Clicking a branch opens a modal showing that branch's tickets, files and description.
+6. A commit whose ticket links were inferred rather than reported is labelled as inferred.
+7. A project that has never been synced shows an explanatory empty state, never a blank
+   canvas or fabricated data.
+8. The last-synced timestamp is visible on the screen.
 
 ## Testing expectations
 
-- **Unit tests for the helper**: all four forges, unrecognised host, SSH form,
-  `.git` suffix, trailing slash, empty `gitRepoUrl`, non-URL value, branch with
-  slashes, and the Azure encoding.
-- **Component tests**: copies the URL when a repository is configured; copies the
-  branch name when it is not; label and `aria-label` change accordingly.
-- Authoritative commands: `npm test` (vitest) per package, plus `tsc` /
-  `next build` for typecheck.
+- TDD across all four modules, with `vitest` in each (`npm test`).
+- The lane-geometry function and the branch-colour state machine are tested as pure
+  functions, without rendering.
+- Backend routes are tested with `supertest`, following the existing route-test pattern.
+- **The frontend has no typecheck script**; `next build` is the only type gate. Plan and
+  tasks must state this explicitly rather than assume a script exists.
 
 ## Open questions
 
-None. Every question raised during brainstorming was resolved by explicit user
-decision.
-
-## Practical note recorded for the user
-
-In this project `gitRepoUrl` is currently empty, so after this feature ships the
-button will keep copying the branch name until the URL is filled in from the
-project form. That is the empty state working as designed, not a defect.
+None. All questions raised during brainstorming were resolved and are recorded above as
+D1–D10.
 
 ## References
 
-No Superpowers design document was created under `docs/superpowers/specs/**`; the
-V3.1 bridge routes formalization to Spec Kit, and this handoff is the design
-evidence. The previous feature's handoff is archived at
-`.specify/bridge/archive/002-ticket-git-branch-view-design.md`.
+- No Superpowers design document was written; this feature was brainstormed in the main
+  conversation and this file is the design record.
+- Predecessor features: `specs/002-ticket-git-branch-view` (introduced `Ticket.gitBranch`),
+  `specs/003-copy-branch-url` (introduced `frontend/src/lib/branchUrl.ts`).
