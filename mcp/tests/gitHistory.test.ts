@@ -1,5 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { config } from '../src/config';
 import { resetTokenCache } from '../src/apiClient';
 import { connectClient, stubBackendFetch, textOf } from './helpers';
@@ -38,6 +37,12 @@ function validCommit(overrides: Record<string, unknown> = {}) {
     truncatedFileCount: 0,
     ...overrides,
   };
+}
+
+function without<T extends Record<string, unknown>>(obj: T, key: string): Record<string, unknown> {
+  const clone: Record<string, unknown> = { ...obj };
+  delete clone[key];
+  return clone;
 }
 
 describe('sync_git_history tool (T030/T031)', () => {
@@ -205,4 +210,45 @@ describe('sync_git_history tool (T030/T031)', () => {
     expect(Object.keys(body.commits[0])).toContain('truncatedFileCount');
     await close();
   });
+});
+
+describe('sync_git_history required fields (fix round 2)', () => {
+  const branchCases: Array<[string, () => Record<string, unknown>]> = [
+    [
+      'branches[].isTrunk',
+      () => ({
+        projectId: 'p1',
+        branches: [without(validBranch(), 'isTrunk')],
+        commits: [validCommit()],
+      }),
+    ],
+  ];
+
+  const commitFields = ['pushed', 'isMerge', 'parentShas', 'truncatedFileCount'] as const;
+  const commitCases: Array<[string, () => Record<string, unknown>]> = commitFields.map((field) => [
+    `commits[].${field}`,
+    () => ({
+      projectId: 'p1',
+      branches: [validBranch()],
+      commits: [without(validCommit(), field)],
+    }),
+  ]);
+
+  it.each([...branchCases, ...commitCases])(
+    'rejects a payload missing %s and never reaches the backend',
+    async (_label, buildArgs) => {
+      const calls = stubBackendFetch(() => ({ status: 200, body: {} }));
+      const { client, close } = await connectClient();
+      const result = await client.callTool({
+        name: 'sync_git_history',
+        arguments: buildArgs(),
+      });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toMatch(
+        /MCP error -32602: Input validation error: Invalid arguments for tool sync_git_history/,
+      );
+      expect(calls).toHaveLength(0);
+      await close();
+    },
+  );
 });
