@@ -193,6 +193,42 @@ describe('BranchDetailModal (T057 / FR-015, SC-005)', () => {
     expect(inCommit.textContent).toBe(branchLabel);
   });
 
+  // SC-005 names this case explicitly: "including a branch with no commits".
+  // Fix round 2 (Minor 4): nothing previously opened the branch modal for a
+  // commitless branch -- the empty-files/empty-tickets rendering, and the
+  // absence of a spurious "subset" notice when there is nothing to be a
+  // subset of, were unasserted.
+  it('opens for a branch with no commits, no files and no tickets, without a false subset notice', async () => {
+    vi.mocked(getGitBranchDetail).mockResolvedValue({
+      id: 'b-orphan',
+      name: 'orphan',
+      isTrunk: false,
+      state: 'UNCOMMITTED' as const,
+      forkedFromBranchName: 'main',
+      lastSyncedAt: '2026-08-21T19:40:00.000Z',
+      commitCount: 0,
+      commitMessages: [],
+      files: [],
+      truncatedFileCount: 0,
+      tickets: [],
+    });
+
+    render(<BranchDetailModal projectId="p1" branchId="b-orphan" onClose={vi.fn()} />);
+
+    const description = await screen.findByTestId('branch-description');
+    expect(description).toHaveTextContent('orphan');
+    expect(description).toHaveTextContent(/uncommitted/i);
+    expect(description).toHaveTextContent(/0 commits recorded/);
+
+    expect(screen.getByTestId('git-files-empty')).toHaveTextContent('No files recorded.');
+    expect(screen.getByTestId('git-tickets-empty')).toHaveTextContent('No tickets are associated with this.');
+    // Nothing was shown, and nothing was truncated -- 0 of 0 is not a
+    // shortened list, so neither honesty notice may appear.
+    expect(screen.queryByTestId('files-truncated')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('commit-messages-subset')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('branch-commit-messages')).not.toBeInTheDocument();
+  });
+
   it('surfaces the reason when the branch detail fails to load', async () => {
     vi.mocked(getGitBranchDetail).mockRejectedValue(new Error('Branch not found'));
 

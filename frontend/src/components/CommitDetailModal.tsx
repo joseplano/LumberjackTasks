@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getGitCommitDetail } from '@/lib/api';
 import type { GitCommitDetail } from '@/lib/types';
 import { GitDetailSection, GitFileList, GitModalShell, GitTicketList } from './GitDetailParts';
@@ -25,20 +25,27 @@ export default function CommitDetailModal({
   const [detail, setDetail] = useState<GitCommitDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  useEffect(() => {
+    // Guards against a stale-response race: the route reuses this component
+    // instance across selections (only `sha` changes), so a slower response
+    // to an earlier selection could otherwise land after a newer one and
+    // paint the wrong commit's data with no error shown.
+    let ignore = false;
     setDetail(null);
     setError(null);
-    try {
-      setDetail(await getGitCommitDetail(projectId, sha));
-    } catch (err) {
-      // No silent failure (constitution): show the backend's reason.
-      setError(err instanceof Error ? err.message : 'Failed to load commit');
-    }
+    (async () => {
+      try {
+        const result = await getGitCommitDetail(projectId, sha);
+        if (!ignore) setDetail(result);
+      } catch (err) {
+        // No silent failure (constitution): show the backend's reason.
+        if (!ignore) setError(err instanceof Error ? err.message : 'Failed to load commit');
+      }
+    })();
+    return () => {
+      ignore = true;
+    };
   }, [projectId, sha]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   return (
     <GitModalShell

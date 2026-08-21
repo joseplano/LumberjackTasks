@@ -175,6 +175,33 @@ describe('CommitDetailModal (T052 / FR-014, FR-016, FR-017, SC-004, SC-006)', ()
     expect(screen.queryByTestId('files-truncated')).not.toBeInTheDocument();
   });
 
+  // SC-004/FR-014, Fix round 2 (Minor 4): GitDetailParts.tsx's "no files"
+  // branch renders correctly-looking text, but nothing opened a modal for a
+  // zero-file commit -- so a regression that rendered nothing (or crashed on
+  // an empty array) would have shipped unasserted.
+  it('shows the empty-files message for a commit with no files', async () => {
+    vi.mocked(getGitCommitDetail).mockResolvedValue({ ...commit, files: [], truncatedFileCount: 0 });
+
+    render(<CommitDetailModal projectId="p1" sha={commit.sha} onClose={vi.fn()} />);
+
+    expect(await screen.findByTestId('git-files-empty')).toHaveTextContent('No files recorded.');
+    expect(screen.queryAllByTestId('git-file')).toHaveLength(0);
+    expect(screen.queryByTestId('files-truncated')).not.toBeInTheDocument();
+  });
+
+  // Same defect, the other empty case: GitDetailParts.tsx's "no tickets"
+  // branch was likewise never exercised by a real modal render.
+  it('shows the empty-tickets message for a commit with no tickets', async () => {
+    vi.mocked(getGitCommitDetail).mockResolvedValue({ ...commit, tickets: [] });
+
+    render(<CommitDetailModal projectId="p1" sha={commit.sha} onClose={vi.fn()} />);
+
+    expect(await screen.findByTestId('git-tickets-empty')).toHaveTextContent(
+      'No tickets are associated with this.',
+    );
+    expect(screen.queryAllByTestId('git-ticket')).toHaveLength(0);
+  });
+
   // FR-029/no silent failure: a failed detail load says why.
   it('surfaces the reason when the commit detail fails to load', async () => {
     vi.mocked(getGitCommitDetail).mockRejectedValue(new Error('Commit not found'));

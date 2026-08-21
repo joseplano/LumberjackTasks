@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getGitBranchDetail } from '@/lib/api';
 import type { BranchState } from '@/lib/branchColor';
 import type { GitBranchDetail } from '@/lib/types';
@@ -19,7 +19,7 @@ const STATE_WORD: Record<BranchState, string> = {
  * in the API or in the database, and none may be added.
  */
 export function composeBranchDescription(branch: GitBranchDetail): string {
-  const state = STATE_WORD[branch.state] ?? branch.state.toLowerCase();
+  const state = STATE_WORD[branch.state];
   const commits = `${branch.commitCount} commit${branch.commitCount === 1 ? '' : 's'} recorded`;
   if (branch.isTrunk) {
     return `Branch "${branch.name}" is this project's trunk and is currently ${state}, with ${commits}.`;
@@ -49,19 +49,26 @@ export default function BranchDetailModal({
   const [detail, setDetail] = useState<GitBranchDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  useEffect(() => {
+    // Guards against a stale-response race: the route reuses this component
+    // instance across selections (only `branchId` changes), so a slower
+    // response to an earlier selection could otherwise land after a newer
+    // one and paint the wrong branch's data with no error shown.
+    let ignore = false;
     setDetail(null);
     setError(null);
-    try {
-      setDetail(await getGitBranchDetail(projectId, branchId));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load branch');
-    }
+    (async () => {
+      try {
+        const result = await getGitBranchDetail(projectId, branchId);
+        if (!ignore) setDetail(result);
+      } catch (err) {
+        if (!ignore) setError(err instanceof Error ? err.message : 'Failed to load branch');
+      }
+    })();
+    return () => {
+      ignore = true;
+    };
   }, [projectId, branchId]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   // Rule 5: `commitMessages` is capped at 50 while `commitCount` is the true
   // total. When it is shorter, say so -- a shortened list is never presented
@@ -76,7 +83,7 @@ export default function BranchDetailModal({
         detail ? (
           <p className="mt-0.5 text-sm text-fg-muted">
             {detail.isTrunk ? 'Trunk · ' : ''}
-            {STATE_WORD[detail.state] ?? detail.state}
+            {STATE_WORD[detail.state]}
           </p>
         ) : undefined
       }

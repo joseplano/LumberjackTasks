@@ -2,7 +2,24 @@ import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import RepoTree from '@/components/RepoTree';
 import { BRANCH_COLOR_TOKEN } from '@/lib/branchColorToken';
-import type { RepoTreeBranch, RepoTreeCommit } from '@/lib/repoTree';
+import { buildRepoTree, type RepoTreeBranch, type RepoTreeCommit } from '@/lib/repoTree';
+
+// Fix round 2 (Important 1). Every label renders at the constant
+// `x={PADDING}` (RepoTree.tsx:134), so comparing a lane's `x1` against the
+// label's OWN `x` attribute is comparing against a constant -- it can never
+// fail for any positive gutter, no matter how the gutter is sized. These two
+// constants mirror RepoTree.tsx's own `PADDING` (16px canvas edge) and its
+// documented safe per-character advance width (RepoTree.tsx:24, currently
+// `LABEL_CHAR_WIDTH = 7`). They are deliberately hard-coded here rather than
+// imported from the component: importing the component's own
+// `LABEL_CHAR_WIDTH` would make the assertion self-referential again (a
+// regression to that constant would shrink both the computed gutter AND the
+// test's threshold together, so the check would stay trivially true). By
+// fixing the expected safe width independently, a regression to an
+// undersized `LABEL_CHAR_WIDTH` in the component actually shrinks the
+// rendered gutter below what this test still requires.
+const PADDING = 16;
+const ASSUMED_LABEL_CHAR_WIDTH = 7;
 
 // Fix round 1 (FR-015, SC-005, spec.md:229-230 "with a lane AND a label").
 //
@@ -98,7 +115,8 @@ describe('RepoTree — branch labels are drawn (FR-015, SC-005)', () => {
   });
 
   it('keeps every label inside the SVG it sizes for itself, including the commitless branch', () => {
-    render(<RepoTree branches={[trunk, feature, orphan]} commits={commits} />);
+    const branches = [trunk, feature, orphan];
+    render(<RepoTree branches={branches} commits={commits} />);
 
     const svg = screen.getByRole('group', { name: 'Repository commit history' });
     const svgWidth = num(svg, 'width');
@@ -116,14 +134,38 @@ describe('RepoTree — branch labels are drawn (FR-015, SC-005)', () => {
       expect(y).toBeLessThan(svgHeight);
     }
 
-    // The gutter the labels live in is really reserved: every lane line starts
-    // to the right of every label's anchor, so text and lanes cannot collide —
-    // including the commitless branch, whose startX === endX === 0.
-    const labelRight = Math.max(...screen.getAllByTestId('repo-lane-label').map((l) => num(l, 'x')));
+    // The gutter the labels live in is really reserved: every lane must start
+    // to the right of the MODELLED EXTENT of its own label's text (the
+    // anchor plus its estimated pixel width) -- not merely to the right of
+    // the label's constant `x` anchor, which every label shares and which
+    // therefore proves nothing about how wide the gutter actually is.
+    // Including the commitless branch, whose startX === endX === 0.
     for (const lane of screen.getAllByTestId('repo-lane')) {
-      expect(num(lane, 'x1')).toBeGreaterThan(labelRight);
+      const branchId = lane.getAttribute('data-branch-id');
+      const name = branches.find((b) => b.id === branchId)?.name;
+      if (name === undefined) throw new Error(`No known branch for lane ${branchId}`);
+      const modelledTextRight = PADDING + name.length * ASSUMED_LABEL_CHAR_WIDTH;
+      expect(num(lane, 'x1')).toBeGreaterThan(modelledTextRight);
       expect(num(lane, 'x2')).toBeLessThanOrEqual(svgWidth);
     }
+
+    // The canvas itself is wide enough to hold the reserved gutter plus the
+    // geometry `buildRepoTree` reports, plus the trailing padding on the
+    // right -- derived from the real (trusted, separately-tested) geometry
+    // function rather than re-implementing RepoTree's own gutter formula.
+    const model = buildRepoTree({ branches, commits });
+    const modelLaneByBranch = new Map(model.lanes.map((l) => [l.branchId, l]));
+    let originX: number | undefined;
+    for (const lane of screen.getAllByTestId('repo-lane')) {
+      const branchId = lane.getAttribute('data-branch-id');
+      const modelLane = branchId ? modelLaneByBranch.get(branchId) : undefined;
+      if (!modelLane) throw new Error(`No model lane for ${branchId}`);
+      const delta = num(lane, 'x1') - modelLane.startX;
+      if (originX === undefined) originX = delta;
+      else expect(delta).toBe(originX);
+    }
+    expect(originX).toBeDefined();
+    expect(svgWidth).toBeGreaterThanOrEqual((originX as number) + model.width + PADDING);
   });
 
   it('exposes exactly one button per branch, so the lane and its label are one control', () => {
