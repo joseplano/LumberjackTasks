@@ -70,9 +70,12 @@ function validCommit(overrides: Record<string, unknown> = {}) {
 }
 
 /** The same object with one key removed -- for proving a field is REQUIRED, which
- * a value of `false` cannot prove (contracts/mcp-tool.md lists `isTrunk`,
- * `pushed` and `isMerge` as plain booleans; only `forkedFromBranchName` and
- * `ticketIds` are optional). */
+ * a value of `false` (or `0`, or `[]`) cannot prove. contracts/mcp-tool.md marks
+ * only `forkedFromBranchName` and `ticketIds` optional, so `isTrunk`, `pushed`,
+ * `isMerge`, `parentShas` and `truncatedFileCount` are all required: omitting
+ * any of them would overwrite recorded truth on a re-report. `files` alone stays
+ * optional, because sync is additive and an absent files array cannot destroy
+ * anything (rule 2 / FR-032). */
 function omit<T extends Record<string, unknown>>(source: T, key: keyof T): Record<string, unknown> {
   const copy: Record<string, unknown> = { ...source };
   delete copy[key as string];
@@ -337,6 +340,78 @@ describe('git history', () => {
       expect(await prisma.gitCommit.count({ where: { projectId, sha: sha(7) } })).toBe(1);
     });
 
+    // The counterpart of the T017 test above, and the same defect class as
+    // `rejects a re-report that omits isTrunk...` below. Rule 3 updates every
+    // field but branchId on a re-report, so if parentShas defaulted to [], a
+    // re-report that simply left it out would erase the commit's topology --
+    // and FR-007 draws every fork and merge edge from that field alone, so the
+    // tree would silently lose the merge with a 200 and no diagnostic.
+    it('rejects a re-report that omits parentShas instead of erasing the recorded parents', async () => {
+      await sync({
+        branches: [trunk],
+        commits: [
+          validCommit({
+            sha: sha(7),
+            branchName: 'main',
+            isMerge: true,
+            parentShas: [sha(1), sha(2)],
+          }),
+        ],
+      });
+      const before = await prisma.gitCommit.findFirst({ where: { projectId, sha: sha(7) } });
+      expect(before!.parentShas).toEqual([sha(1), sha(2)]);
+
+      const res = await sync({
+        branches: [trunk],
+        commits: [
+          omit(
+            validCommit({ sha: sha(7), branchName: 'main', isMerge: true, message: 'reworded' }),
+            'parentShas',
+          ),
+        ],
+      });
+
+      // The data assertion leads deliberately: a regression to a defaulted []
+      // must report the ERASURE, not merely a status mismatch.
+      const after = await prisma.gitCommit.findFirst({ where: { projectId, sha: sha(7) } });
+      expect(after!.parentShas).toEqual([sha(1), sha(2)]);
+      // Nothing else of the rejected batch was written either.
+      expect(after!.message).toBe('chore: initial commit');
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION');
+      expect(String(res.body.error.message)).toContain('parentShas');
+    });
+
+    // Same shape, for the honesty field: a defaulted 0 would silently upgrade a
+    // known-incomplete file list to "complete" (FR-017, rule 2).
+    it('rejects a re-report that omits truncatedFileCount instead of resetting it to 0', async () => {
+      await sync({
+        branches: [trunk],
+        commits: [
+          validCommit({ sha: sha(7), branchName: 'main', truncatedFileCount: 12 }),
+        ],
+      });
+      const before = await prisma.gitCommit.findFirst({ where: { projectId, sha: sha(7) } });
+      expect(before!.truncatedFileCount).toBe(12);
+
+      const res = await sync({
+        branches: [trunk],
+        commits: [
+          omit(
+            validCommit({ sha: sha(7), branchName: 'main', message: 'reworded' }),
+            'truncatedFileCount',
+          ),
+        ],
+      });
+
+      const after = await prisma.gitCommit.findFirst({ where: { projectId, sha: sha(7) } });
+      expect(after!.truncatedFileCount).toBe(12);
+      expect(after!.message).toBe('chore: initial commit');
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION');
+      expect(String(res.body.error.message)).toContain('truncatedFileCount');
+    });
+
     // T018 / FR-032, SC-011, US6 scenario 7: additive only.
     it('leaves a branch absent from a later batch, and its lastSyncedAt, untouched (T018)', async () => {
       const ticketId = await newTicket(projectId, 'Survivor');
@@ -534,6 +609,30 @@ describe('git history', () => {
           label: 'a commit with isMerge omitted',
           body: () => ({ branches: [trunk], commits: [omit(validCommit(), 'isMerge')] }),
           field: 'isMerge',
+        },
+        // parentShas and truncatedFileCount are REQUIRED for the same reason,
+        // and for the same defect class. Rule 3 updates every field but
+        // branchId on a re-report, so an omitted parentShas would overwrite the
+        // recorded parents with [] -- and FR-007 derives every fork and merge
+        // edge from that field alone. An omitted truncatedFileCount defaulting
+        // to 0 would silently assert "this file list is complete", which is
+        // exactly the false claim FR-017 and rule 2 exist to prevent. `files`
+        // is deliberately NOT here: sync is additive and never deletes (rule 2
+        // / FR-032), so an absent files array adds nothing and destroys
+        // nothing, and rejecting it would refuse the legitimate "no files
+        // recorded for this commit" report.
+        {
+          label: 'a commit with parentShas omitted',
+          body: () => ({ branches: [trunk], commits: [omit(validCommit(), 'parentShas')] }),
+          field: 'parentShas',
+        },
+        {
+          label: 'a commit with truncatedFileCount omitted',
+          body: () => ({
+            branches: [trunk],
+            commits: [omit(validCommit(), 'truncatedFileCount')],
+          }),
+          field: 'truncatedFileCount',
         },
       ];
 

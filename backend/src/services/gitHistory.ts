@@ -95,6 +95,24 @@ function asArray(value: unknown, field: string): unknown[] {
   return value;
 }
 
+/**
+ * Rule 7 + rule 3: `parentShas` is not marked optional in
+ * contracts/mcp-tool.md, and rule 3 updates every field other than `branchId`
+ * on a re-report. Defaulting an absent array to `[]` would therefore let a
+ * re-report silently erase the recorded parents of an existing commit -- and
+ * FR-007 derives every fork and merge edge from exactly that field, so the tree
+ * would quietly draw the wrong shape with a 200 and no diagnostic. Required, no
+ * default. An empty array is still legal input: a root commit has no parents,
+ * it just has to say so.
+ */
+function requiredArray(value: unknown, field: string): unknown[] {
+  if (value === undefined || value === null) {
+    invalid(`${field} is required and must be an array`);
+  }
+  if (!Array.isArray(value)) invalid(`${field} must be an array`);
+  return value as unknown[];
+}
+
 function requiredString(value: unknown, field: string): string {
   if (typeof value !== 'string' || value.trim() === '') {
     invalid(`${field} must be a non-empty string`);
@@ -126,8 +144,18 @@ function optionalNullableString(value: unknown, field: string): string | null {
   return value.trim() === '' ? null : value;
 }
 
-function nonNegativeInt(value: unknown, field: string): number {
-  if (value === undefined || value === null) return 0;
+/**
+ * Rule 7 + rule 2: `truncatedFileCount` is the honesty field. Defaulting an
+ * absent value to 0 silently asserts "the stored file list is complete", which
+ * is the exact claim FR-017 and contract rule 2 exist to stop the product from
+ * making falsely -- and on a re-report (rule 3) it would also overwrite a
+ * recorded remainder with 0. An honesty field is never inferred: required, no
+ * default. 0 remains a legal value, explicitly stated.
+ */
+function requiredNonNegativeInt(value: unknown, field: string): number {
+  if (value === undefined || value === null) {
+    invalid(`${field} is required and must be an integer of 0 or more`);
+  }
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
     invalid(`${field} must be an integer of 0 or more`);
   }
@@ -191,6 +219,11 @@ function parseCommit(raw: unknown, index: number): ParsedCommit {
   const field = `commits[${index}]`;
   const commit = asObject(raw, field);
 
+  // `files` is the one list that stays optional and defaults to []. Sync is
+  // additive and never deletes (rule 2 / FR-032), so an absent files array adds
+  // nothing and destroys nothing -- there is no silent overwrite to guard
+  // against, and requiring it would reject the legitimate "no files recorded
+  // for this commit" report. Contrast requiredArray/requiredNonNegativeInt above.
   const rawFiles = asArray(commit.files, `${field}.files`);
   // Rule 6: rejected, never trimmed. The remainder belongs in truncatedFileCount.
   if (rawFiles.length > MAX_FILES_PER_COMMIT) {
@@ -217,7 +250,7 @@ function parseCommit(raw: unknown, index: number): ParsedCommit {
     ),
   ];
 
-  const parentShas = asArray(commit.parentShas, `${field}.parentShas`).map((parent, i) =>
+  const parentShas = requiredArray(commit.parentShas, `${field}.parentShas`).map((parent, i) =>
     shaValue(parent, `${field}.parentShas[${i}]`),
   );
 
@@ -231,7 +264,10 @@ function parseCommit(raw: unknown, index: number): ParsedCommit {
     isMerge: requiredBoolean(commit.isMerge, `${field}.isMerge`),
     parentShas,
     files,
-    truncatedFileCount: nonNegativeInt(commit.truncatedFileCount, `${field}.truncatedFileCount`),
+    truncatedFileCount: requiredNonNegativeInt(
+      commit.truncatedFileCount,
+      `${field}.truncatedFileCount`,
+    ),
     ticketIds,
   };
 }
