@@ -102,8 +102,20 @@ function requiredString(value: unknown, field: string): string {
   return value;
 }
 
-function optionalBoolean(value: unknown, field: string, fallback: boolean): boolean {
-  if (value === undefined || value === null) return fallback;
+/**
+ * Rule 7: the booleans of contracts/mcp-tool.md are plain booleans -- only
+ * `forkedFromBranchName` and `ticketIds` are marked optional there. They are
+ * therefore REQUIRED with no default, for the same reason `state` is
+ * (data-model.md): defaulting an omitted `isTrunk` to `false` would let a
+ * re-report of `{ name: 'main', state: 'ACTIVE' }` silently demote the trunk
+ * and leave the project with none (rule 9), and an omitted `isMerge` would
+ * clear the merge flag and drop a merge edge at draw time (FR-007) -- both with
+ * a 200 and no diagnostic, which Principle IV forbids.
+ */
+function requiredBoolean(value: unknown, field: string): boolean {
+  if (value === undefined || value === null) {
+    invalid(`${field} is required and must be a boolean`);
+  }
   if (typeof value !== 'boolean') invalid(`${field} must be a boolean`);
   return value;
 }
@@ -156,7 +168,7 @@ function parseBranch(raw: unknown, index: number): ParsedBranch {
   const branch = asObject(raw, field);
   return {
     name: requiredString(branch.name, `${field}.name`),
-    isTrunk: optionalBoolean(branch.isTrunk, `${field}.isTrunk`, false),
+    isTrunk: requiredBoolean(branch.isTrunk, `${field}.isTrunk`),
     forkedFromBranchName: optionalNullableString(
       branch.forkedFromBranchName,
       `${field}.forkedFromBranchName`,
@@ -215,8 +227,8 @@ function parseCommit(raw: unknown, index: number): ParsedCommit {
     message: requiredString(commit.message, `${field}.message`),
     authorName: requiredString(commit.authorName, `${field}.authorName`),
     committedAt: dateValue(commit.committedAt, `${field}.committedAt`),
-    pushed: optionalBoolean(commit.pushed, `${field}.pushed`, false),
-    isMerge: optionalBoolean(commit.isMerge, `${field}.isMerge`, false),
+    pushed: requiredBoolean(commit.pushed, `${field}.pushed`),
+    isMerge: requiredBoolean(commit.isMerge, `${field}.isMerge`),
     parentShas,
     files,
     truncatedFileCount: nonNegativeInt(commit.truncatedFileCount, `${field}.truncatedFileCount`),
@@ -328,24 +340,17 @@ export async function syncGitHistory(
         }
       });
 
-      // Rule 8: a ticket id that is not this project's is rejected by name, not
-      // skipped silently (constitution Principle IV).
+      // Rule 8, first half: one read for every ticket id the batch names. The
+      // per-commit rejection itself happens further down, at the point each
+      // commit's links are written -- see the note there.
       const requestedTicketIds = [...new Set(batch.commits.flatMap((commit) => commit.ticketIds))];
+      const ownedTicketIds = new Set<string>();
       if (requestedTicketIds.length > 0) {
         const projectTickets = await tx.ticket.findMany({
           where: { id: { in: requestedTicketIds }, projectId },
           select: { id: true },
         });
-        const ownedTicketIds = new Set(projectTickets.map((ticket) => ticket.id));
-        batch.commits.forEach((commit, index) => {
-          for (const ticketId of commit.ticketIds) {
-            if (!ownedTicketIds.has(ticketId)) {
-              invalid(
-                `commits[${index}].ticketIds contains "${ticketId}", which is not a ticket of this project`,
-              );
-            }
-          }
-        });
+        for (const ticket of projectTickets) ownedTicketIds.add(ticket.id);
       }
 
       // ---- writes -------------------------------------------------------
@@ -380,7 +385,7 @@ export async function syncGitHistory(
       let filesUpserted = 0;
       let ticketLinksUpserted = 0;
 
-      for (const commit of batch.commits) {
+      for (const [index, commit] of batch.commits.entries()) {
         // Rule 1: commits match on (projectId, sha).
         const existingCommit = await tx.gitCommit.findUnique({
           where: { projectId_sha: { projectId, sha: commit.sha } },
@@ -437,6 +442,21 @@ export async function syncGitHistory(
         }
 
         if (commit.ticketIds.length > 0) {
+          // Rule 8, second half: a ticket id that is not this project's is
+          // rejected by name, never skipped silently (Principle IV). The check
+          // lives HERE, at the write, rather than up with its read: by this
+          // point the batch's branches and every earlier commit have already
+          // been written, so the rejection is a real mid-write abort and rule 11
+          // (one transaction) is what makes the batch record nothing. Hoisting
+          // it back above the writes would make the transaction unobservable --
+          // and untestable.
+          for (const ticketId of commit.ticketIds) {
+            if (!ownedTicketIds.has(ticketId)) {
+              invalid(
+                `commits[${index}].ticketIds contains "${ticketId}", which is not a ticket of this project`,
+              );
+            }
+          }
           // Rule 1: ticket links match on (commitId, ticketId). There is nothing
           // to update on a link -- its existence IS the claim that the agent
           // reported it (research R6) -- so an insert that skips duplicates is

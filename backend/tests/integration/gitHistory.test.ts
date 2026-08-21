@@ -69,6 +69,16 @@ function validCommit(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/** The same object with one key removed -- for proving a field is REQUIRED, which
+ * a value of `false` cannot prove (contracts/mcp-tool.md lists `isTrunk`,
+ * `pushed` and `isMerge` as plain booleans; only `forkedFromBranchName` and
+ * `ticketIds` are optional). */
+function omit<T extends Record<string, unknown>>(source: T, key: keyof T): Record<string, unknown> {
+  const copy: Record<string, unknown> = { ...source };
+  delete copy[key as string];
+  return copy;
+}
+
 describe('git history', () => {
   beforeEach(async () => {
     await resetDb();
@@ -506,6 +516,25 @@ describe('git history', () => {
           body: () => ({ branches: [trunk], commits: [validCommit({ branchName: 'invented' })] }),
           field: 'branchName',
         },
+        // The three booleans are REQUIRED, not defaulted. Defaulting an omitted
+        // isTrunk to false would let a re-report of a branch silently demote the
+        // trunk (rule 9) and an omitted isMerge would drop a merge edge (FR-007),
+        // both with a 200 and no diagnostic.
+        {
+          label: 'a branch with isTrunk omitted',
+          body: () => ({ branches: [omit(trunk, 'isTrunk')], commits: [] }),
+          field: 'isTrunk',
+        },
+        {
+          label: 'a commit with pushed omitted',
+          body: () => ({ branches: [trunk], commits: [omit(validCommit(), 'pushed')] }),
+          field: 'pushed',
+        },
+        {
+          label: 'a commit with isMerge omitted',
+          body: () => ({ branches: [trunk], commits: [omit(validCommit(), 'isMerge')] }),
+          field: 'isMerge',
+        },
       ];
 
       for (const testCase of cases) {
@@ -580,6 +609,23 @@ describe('git history', () => {
         expect(only!.isTrunk).toBe(true);
       });
 
+      // Rule 9's silent-demotion hole: an agent re-reporting the trunk without
+      // isTrunk must be told, not obeyed. If isTrunk were defaulted to false the
+      // upsert would write that false over the stored row and leave the project
+      // with NO trunk, answering 200 with no diagnostic.
+      it('rejects a re-report that omits isTrunk instead of silently demoting the trunk', async () => {
+        await sync({ branches: [trunk], commits: [] });
+
+        const res = await sync({ branches: [{ name: 'main', state: 'ACTIVE' }], commits: [] });
+
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('VALIDATION');
+        expect(String(res.body.error.message)).toContain('isTrunk');
+        const stored = await prisma.gitBranch.findFirst({ where: { projectId, name: 'main' } });
+        expect(stored!.isTrunk).toBe(true);
+        expect(await prisma.gitBranch.count({ where: { projectId, isTrunk: true } })).toBe(1);
+      });
+
       it('accepts the SAME branch being re-reported as trunk', async () => {
         await sync({ branches: [trunk], commits: [] });
 
@@ -621,8 +667,11 @@ describe('git history', () => {
       const res = await sync({
         branches: [trunk, feature],
         commits: [
-          // Entirely valid, and listed first, so a non-transactional implementation
-          // would already have written it before reaching the bad one.
+          // NOTE: this is a SHAPE failure (`committedAt`), which parseBatch
+          // rejects before the transaction is even opened -- so this case proves
+          // the batch is all-or-nothing at the shape gate, NOT that a rollback
+          // works. The rollback itself is exercised by the DB-dependent case
+          // below, which fails after rows have already been written.
           validCommit({
             sha: sha(1),
             files: [{ path: 'good.ts', changeType: 'A' }],
@@ -648,6 +697,46 @@ describe('git history', () => {
 
       expect(res.status).toBe(400);
       expect(await gitRowCounts()).toEqual(before);
+    });
+
+    // T024, the case that actually exercises ROLLBACK. The rejection here is
+    // DB-dependent (rule 8: is this ticket id one of the project's?) and it fires
+    // inside the commit write loop, so by the time it throws the transaction has
+    // already written both branches, the first commit, its file and its ticket
+    // link. Only the transaction can take those back: remove the
+    // `prisma.$transaction` wrapper in services/gitHistory.ts and this case fails
+    // on non-zero counts.
+    it('rolls back rows already written when a later commit names a foreign ticket (T024)', async () => {
+      const ourTicketId = await newTicket(projectId, 'Ours');
+      const otherProjectId = await newProject('Other');
+      const foreignTicketId = await newTicket(otherProjectId, 'Not ours');
+
+      const res = await sync({
+        branches: [trunk, feature],
+        commits: [
+          // Entirely valid and written first: a branch row, a commit row, a file
+          // row and a ticket link all exist inside the transaction before the
+          // rejection below is reached.
+          validCommit({
+            sha: sha(1),
+            files: [{ path: 'good.ts', changeType: 'A' }],
+            ticketIds: [ourTicketId],
+          }),
+          validCommit({
+            sha: sha(2),
+            branchName: feature.name,
+            files: [{ path: 'also-good.ts', changeType: 'A' }],
+            ticketIds: [foreignTicketId],
+          }),
+        ],
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION');
+      expect(String(res.body.error.message)).toContain(foreignTicketId);
+      // Nothing survives -- not the branches, not the valid first commit, not its
+      // file, not its ticket link.
+      expect(await gitRowCounts()).toEqual({ branches: 0, commits: 0, files: 0, ticketLinks: 0 });
     });
 
     // T025 / contract section 4 rule 12.
