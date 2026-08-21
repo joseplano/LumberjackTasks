@@ -7,6 +7,7 @@ import { api, getGitHistory } from '@/lib/api';
 import type { GitHistoryResponse, ProjectDetail } from '@/lib/types';
 import RepoTree from '@/components/RepoTree';
 import CommitDetailModal from '@/components/CommitDetailModal';
+import BranchDetailModal from '@/components/BranchDetailModal';
 
 // T047 (FR-002, FR-003): a read-only view of the project's git history.
 // GET-only -- it never creates, modifies or deletes any domain state
@@ -19,6 +20,7 @@ export default function RepoPage() {
   // Selection lives here, not in RepoTree: the tree stays presentational and
   // reports selections upward through its existing props (T053/T058).
   const [selectedSha, setSelectedSha] = useState<string | null>(null);
+  const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
 
   useEffect(() => {
     api<ProjectDetail>(`/projects/${id}`).then(setProject).catch(() => setProject(null));
@@ -63,10 +65,18 @@ export default function RepoPage() {
           branches={history.branches}
           commits={history.commits}
           onCommitSelect={setSelectedSha}
+          onBranchSelect={setSelectedBranchId}
         />
       </div>
       {selectedSha && (
         <CommitDetailModal projectId={id} sha={selectedSha} onClose={() => setSelectedSha(null)} />
+      )}
+      {selectedBranchId && (
+        <BranchDetailModal
+          projectId={id}
+          branchId={selectedBranchId}
+          onClose={() => setSelectedBranchId(null)}
+        />
       )}
     </div>
   );
