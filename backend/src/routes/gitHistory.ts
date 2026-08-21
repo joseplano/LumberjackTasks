@@ -1,6 +1,11 @@
 import { Router, type Request } from 'express';
 import type { GitBranchState, GitFileChange } from '@prisma/client';
-import { listGitHistory, syncGitHistory } from '../services/gitHistory';
+import {
+  getGitBranchDetail,
+  getGitCommitDetail,
+  listGitHistory,
+  syncGitHistory,
+} from '../services/gitHistory';
 
 /**
  * Response types for the four repository-history endpoints of feature
@@ -136,6 +141,30 @@ const router = Router({ mergeParams: true });
  * distinction (rules 2 and 5); this handler only shuttles the result back. */
 router.get('/', async (req: Request<ProjectParams>, res) => {
   const result: GitHistoryTreeResponse = await listGitHistory(req.params.projectId);
+  res.json(result);
+});
+
+/** `GET /api/v1/projects/:projectId/git-history/commits/:sha` (contract
+ * section 2). One commit's files and tickets, for the commit modal. The service
+ * owns the 500-file read cap (rule 1), the reported-vs-inferred derivation
+ * (rule 3) and the unknown-sha 404 (rule 5). */
+router.get('/commits/:sha', async (req: Request<ProjectParams & { sha: string }>, res) => {
+  const result: GitCommitDetailResponse = await getGitCommitDetail(
+    req.params.projectId,
+    req.params.sha,
+  );
+  res.json(result);
+});
+
+/** `GET /api/v1/projects/:projectId/git-history/branches/:branchId` (contract
+ * section 3). One branch's aggregate, for the branch modal. Keyed on the id
+ * rather than the name because branch names contain `/` (research R12); Express
+ * would otherwise split the name across path segments. */
+router.get('/branches/:branchId', async (req: Request<ProjectParams & { branchId: string }>, res) => {
+  const result: GitBranchDetailResponse = await getGitBranchDetail(
+    req.params.projectId,
+    req.params.branchId,
+  );
   res.json(result);
 });
 

@@ -616,3 +616,281 @@ export async function listGitHistory(projectId: string): Promise<GitHistoryListR
     })),
   };
 }
+
+/**
+ * Contract section 3 rule 5 (FR-015): the branch modal shows at most 50 commit
+ * messages, newest first, while `commitCount` carries the true total -- a
+ * shortened list is never presented as the whole.
+ */
+export const MAX_BRANCH_COMMIT_MESSAGES = 50;
+
+/** A ticket as it travels in a read response. `source` is ALWAYS present:
+ * contract section 2 rule 4 is the machine-readable half of D9 -- an inference
+ * is never presented as reported data (FR-025). */
+export interface GitTicketRefResult {
+  id: string;
+  number: number;
+  name: string;
+  source: 'reported' | 'inferred';
+}
+
+interface GitFileRefResult {
+  path: string;
+  changeType: FileChange;
+}
+
+export interface GitCommitDetailResult {
+  sha: string;
+  branchId: string;
+  branchName: string;
+  message: string;
+  authorName: string;
+  committedAt: string;
+  pushed: boolean;
+  isMerge: boolean;
+  parentShas: string[];
+  files: GitFileRefResult[];
+  truncatedFileCount: number;
+  tickets: GitTicketRefResult[];
+}
+
+export interface GitBranchDetailResult {
+  id: string;
+  name: string;
+  isTrunk: boolean;
+  state: BranchState;
+  forkedFromBranchName: string | null;
+  lastSyncedAt: string;
+  commitCount: number;
+  commitMessages: string[];
+  files: GitFileRefResult[];
+  truncatedFileCount: number;
+  tickets: GitTicketRefResult[];
+}
+
+/** The three fields a ticket contributes to a read response, before a `source`
+ * is attached to it. */
+interface TicketRow {
+  id: string;
+  number: number;
+  name: string;
+}
+
+/** Both endpoints return tickets in a stable order. The contract does not fix
+ * one, and an unordered list would still be correct -- but an arbitrary one
+ * makes the responses unassertable, so ticket number ascending it is. */
+function byTicketNumber<T extends TicketRow>(tickets: T[]): T[] {
+  return [...tickets].sort((a, b) => a.number - b.number);
+}
+
+/**
+ * Research R6: the tickets whose *stored* `gitBranch` equals this branch's
+ * name. Read every time, stored never. `Ticket.gitBranch` keeps its existing
+ * doctrine (schema.prisma: "no generator and no read-time derivation") -- that
+ * rule governs the stored branch value, which nothing here writes.
+ */
+function loadInferredTickets(projectId: string, branchName: string): Promise<TicketRow[]> {
+  return prisma.ticket.findMany({
+    where: { projectId, gitBranch: branchName },
+    orderBy: { number: 'asc' },
+    select: { id: true, number: true, name: true },
+  });
+}
+
+/**
+ * Contract section 2 rule 3, written ONCE and reused by both read endpoints so
+ * the two can never drift apart:
+ *
+ *   - at least one reported link -> exactly those links, every one "reported".
+ *     Inference is NOT mixed in.
+ *   - no reported link           -> the branch-matched tickets, every one
+ *     "inferred".
+ *   - neither                    -> [].
+ *
+ * Rule 4 holds structurally: `source` is written by this function and there is
+ * no path through it that produces a ticket without one.
+ *
+ * `loadInferred` is a thunk rather than a list because the inference costs a
+ * query that a commit with reported links must not pay -- and because the
+ * branch endpoint hands in a MEMOISED thunk, so a branch of 50 commits still
+ * infers at most once.
+ */
+async function deriveCommitTickets(
+  reported: TicketRow[],
+  loadInferred: () => Promise<TicketRow[]>,
+): Promise<GitTicketRefResult[]> {
+  if (reported.length > 0) {
+    return byTicketNumber(reported).map((ticket) => ({ ...ticket, source: 'reported' as const }));
+  }
+  return byTicketNumber(await loadInferred()).map((ticket) => ({
+    ...ticket,
+    source: 'inferred' as const,
+  }));
+}
+
+function memoize<T>(load: () => Promise<T>): () => Promise<T> {
+  let cached: Promise<T> | undefined;
+  return () => {
+    cached ??= load();
+    return cached;
+  };
+}
+
+async function getProjectOr404(projectId: string) {
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true } });
+  if (!project) throw new ApiError(404, 'NOT_FOUND', 'Project not found');
+  return project;
+}
+
+/**
+ * `GET /api/v1/projects/:projectId/git-history/commits/:sha` (contract
+ * section 2): one commit's files and tickets, for the commit modal.
+ *
+ * Rule 1 is enforced HERE, on the read, rather than trusted from the write
+ * path. The write path's 500-file cap is per BATCH, and sync is additive and
+ * never deletes (section 4 rule 2 / FR-032), so re-reporting one sha with a
+ * different set of 500 paths leaves 1000 rows on that commit. Ordering by
+ * `path` and taking 500 is what makes rule 1 true regardless of how the rows
+ * got there. `truncatedFileCount` is NOT adjusted to compensate: it is the
+ * commit row's own honesty field (rule 2) and belongs to the reporter.
+ */
+export async function getGitCommitDetail(
+  projectId: string,
+  sha: string,
+): Promise<GitCommitDetailResult> {
+  await getProjectOr404(projectId);
+
+  const commit = await prisma.gitCommit.findUnique({
+    where: { projectId_sha: { projectId, sha } },
+    include: {
+      branch: { select: { id: true, name: true } },
+      // Rule 1: ordered by path ascending, capped at 500 -- in the database,
+      // so a commit carrying 1000 rows never materialises them all.
+      files: {
+        orderBy: { path: 'asc' },
+        take: MAX_FILES_PER_COMMIT,
+        select: { path: true, changeType: true },
+      },
+      // Every row here is, by definition, a link the agent REPORTED: the table
+      // stores nothing else (research R6, schema.prisma).
+      ticketLinks: { select: { ticket: { select: { id: true, number: true, name: true } } } },
+    },
+  });
+  // Rule 5. The lookup is keyed on (projectId, sha), so a sha recorded on
+  // another project is unknown here -- projects do not leak into each other
+  // even though the system is single-tenant (FR-030).
+  if (!commit) throw new ApiError(404, 'NOT_FOUND', 'Commit not found');
+
+  const tickets = await deriveCommitTickets(
+    commit.ticketLinks.map((link) => link.ticket),
+    () => loadInferredTickets(projectId, commit.branch.name),
+  );
+
+  return {
+    sha: commit.sha,
+    branchId: commit.branchId,
+    branchName: commit.branch.name,
+    message: commit.message,
+    authorName: commit.authorName,
+    committedAt: commit.committedAt.toISOString(),
+    pushed: commit.pushed,
+    isMerge: commit.isMerge,
+    parentShas: commit.parentShas,
+    files: commit.files.map((file) => ({ path: file.path, changeType: file.changeType })),
+    truncatedFileCount: commit.truncatedFileCount,
+    tickets,
+  };
+}
+
+/**
+ * `GET /api/v1/projects/:projectId/git-history/branches/:branchId` (contract
+ * section 3): one branch's aggregate, for the branch modal.
+ *
+ * Keyed on the id and not the name because branch names contain `/`
+ * (`chore/ignore-mcp-bot-password` in this very repository), which cannot
+ * travel in one path segment without double-encoding that proxies mangle
+ * (research R12).
+ *
+ * There is deliberately no `description` field: FR-015 and rule 4 make the
+ * description the CLIENT's composition of `name`, `state` and `commitMessages`.
+ * Nothing authored it, so nothing here may claim to return it.
+ */
+export async function getGitBranchDetail(
+  projectId: string,
+  branchId: string,
+): Promise<GitBranchDetailResult> {
+  await getProjectOr404(projectId);
+
+  // Rule 6, both halves in one query: an unknown id and another project's
+  // branch are the same 404, and neither reveals that the other project's
+  // branch exists.
+  const branch = await prisma.gitBranch.findFirst({ where: { id: branchId, projectId } });
+  if (!branch) throw new ApiError(404, 'NOT_FOUND', 'Branch not found');
+
+  // The branch's commits are the ones INTRODUCED on it: `branchId` is set once
+  // and never updated (FR-024/D8), so this is attribution, not a guess.
+  //
+  // Ordered ASCENDING by (committedAt, sha) -- the same total order section 1
+  // rule 3 fixes for the tree. Rule 1's "the most recent commit's change type
+  // wins" then falls out of iterating in that order and letting a later commit
+  // overwrite an earlier one, which also settles the identical-committedAt tie
+  // in favour of the higher sha.
+  const commits = await prisma.gitCommit.findMany({
+    where: { branchId: branch.id },
+    orderBy: [{ committedAt: 'asc' }, { sha: 'asc' }],
+    include: {
+      files: { orderBy: { path: 'asc' }, select: { path: true, changeType: true } },
+      ticketLinks: { select: { ticket: { select: { id: true, number: true, name: true } } } },
+    },
+  });
+
+  // Rule 1 (the distinct union) and rule 2 (the sum) in one pass.
+  const changeTypeByPath = new Map<string, FileChange>();
+  let truncatedFileCount = 0;
+  for (const commit of commits) {
+    truncatedFileCount += commit.truncatedFileCount;
+    for (const file of commit.files) changeTypeByPath.set(file.path, file.changeType);
+  }
+  const files = [...changeTypeByPath.entries()]
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([path, changeType]) => ({ path, changeType }));
+
+  // Rule 3: the union of each commit's tickets under section 2 rule 3,
+  // de-duplicated by id, with `reported` on ANY commit beating `inferred` on
+  // any other -- in both directions, so the merge does not depend on the order
+  // the commits happen to be visited in. The inference itself is memoised:
+  // every commit of this branch would infer the same set, from the same name.
+  const loadInferred = memoize(() => loadInferredTickets(projectId, branch.name));
+  const ticketsById = new Map<string, GitTicketRefResult>();
+  for (const commit of commits) {
+    const refs = await deriveCommitTickets(
+      commit.ticketLinks.map((link) => link.ticket),
+      loadInferred,
+    );
+    for (const ref of refs) {
+      const existing = ticketsById.get(ref.id);
+      if (!existing || (existing.source === 'inferred' && ref.source === 'reported')) {
+        ticketsById.set(ref.id, ref);
+      }
+    }
+  }
+
+  return {
+    id: branch.id,
+    name: branch.name,
+    isTrunk: branch.isTrunk,
+    state: branch.state,
+    forkedFromBranchName: branch.forkedFromBranchName,
+    lastSyncedAt: branch.lastSyncedAt.toISOString(),
+    // Rule 5: the TRUE total travels alongside the capped list, so the client
+    // can say the messages shown are a subset rather than imply completeness.
+    commitCount: commits.length,
+    commitMessages: [...commits]
+      .reverse()
+      .slice(0, MAX_BRANCH_COMMIT_MESSAGES)
+      .map((commit) => commit.message),
+    files,
+    truncatedFileCount,
+    tickets: byTicketNumber([...ticketsById.values()]),
+  };
+}
