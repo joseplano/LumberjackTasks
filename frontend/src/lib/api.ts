@@ -1,4 +1,5 @@
 import { clearToken, getToken } from './auth';
+import type { GitHistoryResponse } from './types';
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
@@ -41,4 +42,11 @@ export async function api<T>(
   }
 
   return data as T;
+}
+
+// T045: typed fetcher for contracts/http-api.md section 1. GET-only, on top
+// of the shared `api` helper -- never a second client (constitution
+// Principle I: the frontend is an HTTP consumer only).
+export function getGitHistory(projectId: string): Promise<GitHistoryResponse> {
+  return api<GitHistoryResponse>(`/projects/${projectId}/git-history`);
 }

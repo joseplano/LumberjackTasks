@@ -1,3 +1,5 @@
+import type { BranchState } from './branchColor';
+
 export interface Project {
   id: string;
   code: string;
@@ -111,3 +113,36 @@ export interface ProjectMetrics {
 }
 
 export const FIBONACCI = [1, 2, 3, 5, 8, 13, 21];
+
+// Feature 004: GET /projects/:projectId/git-history response shape
+// (contracts/http-api.md section 1). Deliberately excludes file lists
+// (research R12) -- those are fetched per-commit later, by the commit modal.
+export interface GitHistoryBranch {
+  id: string;
+  name: string;
+  isTrunk: boolean;
+  forkedFromBranchName: string | null;
+  state: BranchState;
+  lastSyncedAt: string;
+}
+
+export interface GitHistoryCommit {
+  sha: string;
+  branchId: string;
+  message: string;
+  authorName: string;
+  committedAt: string;
+  pushed: boolean;
+  isMerge: boolean;
+  parentShas: string[];
+  fileCount: number;
+  truncatedFileCount: number;
+}
+
+export interface GitHistoryResponse {
+  // Rule 1: the max lastSyncedAt across the project's branches, or null when
+  // the project has no branches (rule 2: never-synced).
+  lastSyncedAt: string | null;
+  branches: GitHistoryBranch[];
+  commits: GitHistoryCommit[];
+}

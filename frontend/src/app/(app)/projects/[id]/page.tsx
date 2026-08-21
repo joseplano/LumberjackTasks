@@ -91,6 +91,13 @@ export default function ProjectBoardPage() {
           >
             View backlog
           </Link>
+          {/* T048 (FR-001, SC-001): matches View backlog's className exactly. */}
+          <Link
+            href={`/projects/${id}/repo`}
+            className="rounded-omarchy border border-border bg-surface px-3 py-1.5 text-sm text-fg hover:border-accent"
+          >
+            View repo
+          </Link>
           <button
             onClick={() => setTicketModalOpen(true)}
             className="rounded-omarchy bg-accent px-3 py-1.5 text-sm font-medium text-bg hover:opacity-90"
