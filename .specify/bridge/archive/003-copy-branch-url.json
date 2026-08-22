@@ -1,0 +1,82 @@
+{
+  "bridgeVersion": "3.1.0",
+  "phase": "ready_for_sdd",
+  "result": "READY_FOR_SDD",
+  "originalIdea": "en los tickets, en el nombre del branch del repo en la opcion de copiar, que al portapaleles te copie toda la url include el brabch asi podemos ir directamente al branch al repo",
+  "classification": "bounded",
+  "approvedDesignPath": ".specify/bridge/approved-design.md",
+  "activeFeatureDirectory": "specs/003-copy-branch-url",
+  "infrastructure": {
+    "result": "READY_FOR_FEATURE",
+    "specifyCli": "0.15.2.dev0",
+    "constitution": ".specify/memory/constitution.md (v1.0.0, ratified)"
+  },
+  "baseBranch": "002-ticket-git-branch-view",
+  "baseBranchRationale": "Stacked by explicit user decision: feature 002 is committed (18ff05a) and pushed but not merged into main, and this feature modifies the copy control that 002 introduced. main has neither the control nor the branch field.",
+  "canonicalBranch": "003-copy-branch-url",
+  "currentBranch": "003-copy-branch-url",
+  "artifacts": {
+    "spec": "specs/003-copy-branch-url/spec.md",
+    "plan": "specs/003-copy-branch-url/plan.md",
+    "research": "specs/003-copy-branch-url/research.md",
+    "dataModel": "specs/003-copy-branch-url/data-model.md",
+    "quickstart": "specs/003-copy-branch-url/quickstart.md",
+    "tasks": "specs/003-copy-branch-url/tasks.md",
+    "contracts": [
+      "specs/003-copy-branch-url/contracts/branchUrl.md"
+    ],
+    "checklists": [
+      "specs/003-copy-branch-url/checklists/requirements.md",
+      "specs/003-copy-branch-url/checklists/readiness.md",
+      "specs/003-copy-branch-url/checklists/technology.md"
+    ]
+  },
+  "readiness": {
+    "result": "64/64",
+    "requirements": "16/16",
+    "readinessChecklist": "33/33",
+    "technology": "15/15",
+    "functionalRequirements": 17,
+    "successCriteria": 7,
+    "tasks": 18,
+    "tasksComplete": 17,
+    "analyze": "clean",
+    "openQuestions": []
+  },
+  "implementationStarted": true,
+  "implementation": {
+    "head": "f51b5f7",
+    "tasksOpen": [
+      "T014 — manual quickstart walkthrough; needs a real browser and a live forge URL, so it is the human partner's step"
+    ],
+    "gate": {
+      "frontend": "22 files / 183 tests",
+      "typecheck": "tsc --noEmit exit 0",
+      "backend": "19 files / 282 tests",
+      "mcp": "9 files / 80 tests",
+      "plugin": "21 pass / 0 fail (node --test plugin/tests/*.test.mjs, glob form)"
+    },
+    "productRulings": [
+      "2026-08-17: a query string is decoration on the path-shaped forges and is discarded there; Azure DevOps is exempt because its query is addressing information.",
+      "2026-08-17: a fragment is decoration on every forge including Azure DevOps and is always discarded."
+    ],
+    "amendmentsBuilt": "FR-003e, contract Stage 1 rules 6a-6c, tasks T016-T018"
+  },
+  "previousFeature": {
+    "directory": "specs/002-ticket-git-branch-view",
+    "result": "FEATURE_IMPLEMENTED_AND_VERIFIED",
+    "commit": "18ff05a",
+    "pushed": true,
+    "mergedToMain": false,
+    "archivedState": ".specify/bridge/archive/002-ticket-git-branch-view.json"
+  },
+  "recoveryNote": "Rewritten 2026-08-16 after the D: NVMe fault. The drive was dropping off the bus, so reads returned ERROR_NO_SUCH_DEVICE; no spec artifact was actually lost — all ten files under specs/003-copy-branch-url/ verified intact after the reboot. Only this state file was stale (it still read phase design_approved with null branch/directory) and the counts above were re-derived from the artifacts themselves, not restored from memory.",
+  "archived": {
+    "date": "2026-08-21",
+    "reason": "Archived by the human partner on 2026-08-21 to start feature 004 (view repo git tree).",
+    "openWork": "T014 (manual quickstart walkthrough in a real browser) was never executed, and 003 was merged into main without it. Still genuinely open as a human verification step.",
+    "branch": "003-copy-branch-url, merged into main at 92d4063 (002 merged at df37b90)",
+    "correction": "An earlier annotation in this file said 003 was NOT merged into main. That was wrong: it copied the stale in-flight state instead of checking the repository. Verified 2026-08-21 with git branch --merged main: 001, 002 and 003 are all merged."
+  },
+  "mergedToMain": true
+}

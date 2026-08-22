@@ -1,0 +1,439 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { BRANCH_COLOR_TOKEN } from '@/lib/branchColorToken';
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+  useParams: () => ({ id: 'p1' }),
+}));
+vi.mock('@/lib/api', () => ({
+  api: vi.fn(),
+  getGitHistory: vi.fn(),
+  getGitCommitDetail: vi.fn(),
+  getGitBranchDetail: vi.fn(),
+}));
+
+import RepoPage from '@/app/(app)/projects/[id]/repo/page';
+import { api, getGitBranchDetail, getGitCommitDetail, getGitHistory } from '@/lib/api';
+
+const project = {
+  id: 'p1',
+  code: 'ANIM-000001',
+  name: 'Anima Machina',
+  description: '',
+  gitRepoUrl: '',
+  createdAt: '',
+  updatedAt: '',
+  columns: [],
+  labels: [],
+  phases: [],
+};
+
+// main (trunk, ACTIVE -> blue per branchColor rule 1): m1 -> m2 (merge, parents [m1, f1]).
+// feature (non-trunk, MERGED -> grey per branchColor rule 2): f1, forked off m1.
+const history = {
+  lastSyncedAt: '2026-08-21T19:40:00.000Z',
+  branches: [
+    {
+      id: 'b-main',
+      name: 'main',
+      isTrunk: true,
+      forkedFromBranchName: null,
+      state: 'ACTIVE',
+      lastSyncedAt: '2026-08-21T19:40:00.000Z',
+    },
+    {
+      id: 'b-feat',
+      name: 'feature',
+      isTrunk: false,
+      forkedFromBranchName: 'main',
+      state: 'MERGED',
+      lastSyncedAt: '2026-08-21T19:40:00.000Z',
+    },
+  ],
+  commits: [
+    {
+      sha: 'm1',
+      branchId: 'b-main',
+      message: 'Initial commit',
+      authorName: 'juglarx',
+      committedAt: '2024-01-01T00:00:00.000Z',
+      pushed: true,
+      isMerge: false,
+      parentShas: [],
+      fileCount: 1,
+      truncatedFileCount: 0,
+    },
+    {
+      sha: 'f1',
+      branchId: 'b-feat',
+      message: 'Feature work',
+      authorName: 'juglarx',
+      committedAt: '2024-01-02T00:00:00.000Z',
+      pushed: true,
+      isMerge: false,
+      parentShas: ['m1'],
+      fileCount: 2,
+      truncatedFileCount: 0,
+    },
+    {
+      sha: 'm2',
+      branchId: 'b-main',
+      message: "Merge branch 'feature'",
+      authorName: 'juglarx',
+      committedAt: '2024-01-03T00:00:00.000Z',
+      pushed: true,
+      isMerge: true,
+      parentShas: ['m1', 'f1'],
+      fileCount: 0,
+      truncatedFileCount: 0,
+    },
+  ],
+};
+
+describe('RepoPage', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // T042 (FR-005, FR-008, FR-012): one lane per branch, one circle per
+  // commit, coloured per branchColor -- not a hard-coded hex (SC-001a).
+  it('renders one lane per branch and one commit circle per commit, coloured per branchColor', async () => {
+    vi.mocked(api).mockImplementation((path: string) => {
+      if (path === '/projects/p1') return Promise.resolve(project);
+      return Promise.reject(new Error(`Unexpected path ${path}`));
+    });
+    vi.mocked(getGitHistory).mockResolvedValue(history);
+
+    render(<RepoPage />);
+
+    const lanes = await screen.findAllByTestId('repo-lane');
+    expect(lanes).toHaveLength(history.branches.length);
+    const commits = screen.getAllByTestId('repo-commit');
+    expect(commits).toHaveLength(history.commits.length);
+
+    const laneFor = (branchId: string) => lanes.find((l) => l.getAttribute('data-branch-id') === branchId);
+    const commitFor = (sha: string) => commits.find((c) => c.getAttribute('data-sha') === sha);
+
+    // Trunk lane is blue regardless of its reported state (FR-011).
+    expect(laneFor('b-main')).toHaveAttribute('data-color', 'blue');
+    // MERGED non-trunk branch is grey (D5), and keeps its own lane rather
+    // than folding into the trunk (D8).
+    expect(laneFor('b-feat')).toHaveAttribute('data-color', 'grey');
+
+    // Every commit is drawn in its branch's colour, never its own (FR-012).
+    expect(commitFor('m1')).toHaveAttribute('data-color', 'blue');
+    expect(commitFor('m2')).toHaveAttribute('data-color', 'blue');
+    expect(commitFor('f1')).toHaveAttribute('data-color', 'grey');
+
+    // Colours must resolve through the shared BRANCH_COLOR_TOKEN map to a
+    // themeable CSS custom property, never a hard-coded hex (SC-001a) -- a
+    // `data-color="blue"` assertion alone can't catch a `fill="#0000ff"`
+    // regression, so assert the rendered `fill` directly too.
+    expect(commitFor('m1')).toHaveAttribute('fill', BRANCH_COLOR_TOKEN.blue);
+    expect(commitFor('f1')).toHaveAttribute('fill', BRANCH_COLOR_TOKEN.grey);
+    expect(laneFor('b-main')).toHaveAttribute('stroke', BRANCH_COLOR_TOKEN.blue);
+    expect(laneFor('b-feat')).toHaveAttribute('stroke', BRANCH_COLOR_TOKEN.grey);
+
+    // T046: commit circles and branch lanes are reachable by keyboard with
+    // an accessible name identifying which commit/branch.
+    expect(screen.getByRole('button', { name: 'Commit m1 on main' })).toHaveAttribute('tabindex', '0');
+    expect(screen.getByRole('button', { name: 'Branch feature' })).toHaveAttribute('tabindex', '0');
+  });
+
+  it('shows the error state when loading fails', async () => {
+    vi.mocked(api).mockResolvedValue(project);
+    vi.mocked(getGitHistory).mockRejectedValue(new Error('Repo history unavailable'));
+
+    render(<RepoPage />);
+    expect(await screen.findByText('Repo history unavailable')).toBeInTheDocument();
+  });
+});
+
+// The never-synced shape from contracts/http-api.md section 1 rule 2: a 200
+// with `lastSyncedAt: null` and both arrays empty. This is NOT a failure and
+// NOT a 404 -- it means the agent has never reported this project's history.
+const neverSynced = { lastSyncedAt: null, branches: [], commits: [] };
+
+// T061 (FR-029, FR-033, SC-007, SC-012): the three states must be
+// distinguishable and must never be conflated.
+describe('RepoPage — the three states', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api).mockImplementation((path: string) => {
+      if (path === '/projects/p1') return Promise.resolve(project);
+      return Promise.reject(new Error(`Unexpected path ${path}`));
+    });
+  });
+
+  it('while history is loading, shows a loading indication and not the empty state', async () => {
+    // A fetch still in flight: never resolves for the duration of the test.
+    vi.mocked(getGitHistory).mockReturnValue(new Promise(() => {}));
+
+    render(<RepoPage />);
+
+    expect(await screen.findByTestId('repo-loading')).toBeInTheDocument();
+    // Loading is not emptiness (FR-033).
+    expect(screen.queryByTestId('repo-never-synced')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('repo-error')).not.toBeInTheDocument();
+    expect(screen.queryAllByTestId('repo-commit')).toHaveLength(0);
+  });
+
+  it('when the fetch fails, names the reason and does not show the empty state', async () => {
+    vi.mocked(getGitHistory).mockRejectedValue(new Error('Database is unreachable'));
+
+    render(<RepoPage />);
+
+    const err = await screen.findByTestId('repo-error');
+    // The backend's own reason, not a generic "Something went wrong".
+    expect(err).toHaveTextContent('Database is unreachable');
+    // A failure to load MUST NOT be presented as an empty history (FR-033).
+    expect(screen.queryByTestId('repo-never-synced')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('repo-loading')).not.toBeInTheDocument();
+    expect(screen.queryAllByTestId('repo-lane')).toHaveLength(0);
+    expect(screen.queryAllByTestId('repo-commit')).toHaveLength(0);
+  });
+
+  it('when the project has never been synced, explains how to sync and fabricates nothing', async () => {
+    vi.mocked(getGitHistory).mockResolvedValue(neverSynced);
+
+    render(<RepoPage />);
+
+    const empty = await screen.findByTestId('repo-never-synced');
+    // FR-029: an empty state that EXPLAINS how to sync -- naming the agent
+    // tool and the skill that drives it, not a blank canvas.
+    expect(empty).toHaveTextContent(/never been synced/i);
+    expect(empty).toHaveTextContent(/sync_git_history/);
+    expect(empty).toHaveTextContent(/lumberjack-tasks:ticket-sync/);
+
+    // It is not an error and not a loading state.
+    expect(screen.queryByTestId('repo-error')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('repo-loading')).not.toBeInTheDocument();
+
+    // No fabricated history: no lanes, no commits, no invented timestamp.
+    expect(screen.queryAllByTestId('repo-lane')).toHaveLength(0);
+    expect(screen.queryAllByTestId('repo-commit')).toHaveLength(0);
+    expect(screen.queryByTestId('last-synced')).not.toBeInTheDocument();
+
+    // Constitution Principle I: the empty state offers instructions, never a
+    // second write path. There is no sync control on this screen.
+    expect(screen.queryByRole('button', { name: /sync/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /sync/i })).not.toBeInTheDocument();
+  });
+});
+
+// T062 (FR-028, SC-008): show when the history was last synced -- and only
+// when there is a real timestamp to show.
+describe('RepoPage — last synced', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api).mockImplementation((path: string) => {
+      if (path === '/projects/p1') return Promise.resolve(project);
+      return Promise.reject(new Error(`Unexpected path ${path}`));
+    });
+  });
+
+  it('renders the last-synced timestamp when lastSyncedAt is non-null', async () => {
+    vi.mocked(getGitHistory).mockResolvedValue(history);
+
+    render(<RepoPage />);
+
+    const stamp = await screen.findByTestId('last-synced');
+    expect(stamp).toHaveAttribute('datetime', history.lastSyncedAt);
+    expect(stamp).toHaveTextContent(new Date(history.lastSyncedAt).toLocaleString());
+  });
+
+  it('renders no last-synced timestamp when lastSyncedAt is null', async () => {
+    vi.mocked(getGitHistory).mockResolvedValue(neverSynced);
+
+    render(<RepoPage />);
+
+    expect(await screen.findByTestId('repo-never-synced')).toBeInTheDocument();
+    expect(screen.queryByTestId('last-synced')).not.toBeInTheDocument();
+  });
+});
+
+// Fix round 1 (FR-015, SC-005): "clicking a branch lane OR ITS LABEL". The
+// label is not decoration — it is an affordance the spec names, so activating
+// it must open the same modal the lane opens.
+describe('RepoPage — the branch label opens the branch modal', () => {
+  const featureBranchDetail = {
+    id: 'b-feat',
+    name: 'feature',
+    isTrunk: false,
+    state: 'MERGED' as const,
+    forkedFromBranchName: 'main',
+    lastSyncedAt: '2026-08-21T19:40:00.000Z',
+    commitCount: 1,
+    commitMessages: ['Feature work'],
+    files: [{ path: 'frontend/src/lib/repoTree.ts', changeType: 'M' as const }],
+    truncatedFileCount: 0,
+    tickets: [{ id: 't-1', number: 41, name: 'A ticket', source: 'reported' as const }],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api).mockImplementation((path: string) => {
+      if (path === '/projects/p1') return Promise.resolve(project);
+      return Promise.reject(new Error(`Unexpected path ${path}`));
+    });
+    vi.mocked(getGitHistory).mockResolvedValue(history);
+    vi.mocked(getGitBranchDetail).mockResolvedValue(featureBranchDetail);
+  });
+
+  it('opens the branch modal from the label, and the same modal from the lane', async () => {
+    const user = userEvent.setup();
+    render(<RepoPage />);
+
+    await screen.findAllByTestId('repo-lane');
+
+    const labelFor = (branchId: string) => {
+      const el = screen
+        .getAllByTestId('repo-lane-label')
+        .find((l) => l.getAttribute('data-branch-id') === branchId);
+      if (!el) throw new Error(`No rendered label for ${branchId}`);
+      return el;
+    };
+    const laneFor = (branchId: string) => {
+      const el = screen
+        .getAllByTestId('repo-lane')
+        .find((l) => l.getAttribute('data-branch-id') === branchId);
+      if (!el) throw new Error(`No rendered lane for ${branchId}`);
+      return el;
+    };
+
+    // 1. The label opens it.
+    await user.click(labelFor('b-feat'));
+    expect(await screen.findByTestId('branch-description')).toHaveTextContent(/Branch "feature"/);
+    expect(vi.mocked(getGitBranchDetail)).toHaveBeenCalledWith('p1', 'b-feat');
+    const fromLabel = screen.getByTestId('branch-description').textContent;
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByTestId('branch-description')).not.toBeInTheDocument();
+
+    // 2. The lane opens the same one — one control, one handler (FR-015).
+    await user.click(laneFor('b-feat'));
+    expect(await screen.findByTestId('branch-description')).toHaveTextContent(fromLabel as string);
+  });
+});
+
+// T072 (FR-003, constitution Principle I): the executable proof that the
+// repository view is read-only.
+//
+// The module mock above replaces the api layer for every other test in this
+// file. Here the mocked exports are pointed back at the REAL implementations
+// and `fetch` itself is stubbed, so the actual HTTP method of every outbound
+// call is recorded. That is what makes this test discriminate: if any of
+// these calls were changed to POST, PUT, PATCH or DELETE -- in the page, in a
+// modal, or in `lib/api.ts` -- the recorded method would change and this
+// assertion would fail.
+const realApi = await vi.importActual<typeof import('@/lib/api')>('@/lib/api');
+
+interface RecordedRequest {
+  url: string;
+  method: string;
+}
+
+const commitDetail = {
+  sha: 'f1',
+  branchId: 'b-feat',
+  branchName: 'feature',
+  message: 'Feature work',
+  authorName: 'juglarx',
+  committedAt: '2024-01-02T00:00:00.000Z',
+  pushed: true,
+  isMerge: false,
+  parentShas: ['m1'],
+  files: [{ path: 'frontend/src/lib/repoTree.ts', changeType: 'M' }],
+  truncatedFileCount: 0,
+  tickets: [{ id: 't-1', number: 41, name: 'A ticket', source: 'reported' }],
+};
+
+const branchDetail = {
+  id: 'b-feat',
+  name: 'feature',
+  isTrunk: false,
+  state: 'MERGED',
+  forkedFromBranchName: 'main',
+  lastSyncedAt: '2026-08-21T19:40:00.000Z',
+  commitCount: 1,
+  commitMessages: ['Feature work'],
+  files: [{ path: 'frontend/src/lib/repoTree.ts', changeType: 'M' }],
+  truncatedFileCount: 0,
+  tickets: [{ id: 't-1', number: 41, name: 'A ticket', source: 'reported' }],
+};
+
+const ROUTES: Record<string, unknown> = {
+  '/api/v1/projects/p1': project,
+  '/api/v1/projects/p1/git-history': history,
+  '/api/v1/projects/p1/git-history/commits/f1': commitDetail,
+  '/api/v1/projects/p1/git-history/branches/b-feat': branchDetail,
+};
+
+describe('RepoPage — read-only (T072 / FR-003, constitution Principle I)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('issues only GET requests while rendering the tree and opening both modals', async () => {
+    const recorded: RecordedRequest[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        // A caller that omits `method` is a GET by the fetch spec, so record
+        // it as one rather than as "unknown".
+        recorded.push({ url, method: init?.method ?? 'GET' });
+        const key = Object.keys(ROUTES).find((k) => url.endsWith(k));
+        return Promise.resolve({
+          ok: key !== undefined,
+          status: key !== undefined ? 200 : 404,
+          json: () =>
+            Promise.resolve(
+              key !== undefined ? ROUTES[key] : { error: { code: 'NOT_FOUND', message: 'no route' } },
+            ),
+        } as unknown as Response);
+      }),
+    );
+
+    // Real implementations, real methods -- not the module mock's stand-ins.
+    vi.mocked(api).mockImplementation(realApi.api as unknown as typeof api);
+    vi.mocked(getGitHistory).mockImplementation(realApi.getGitHistory);
+    vi.mocked(getGitCommitDetail).mockImplementation(realApi.getGitCommitDetail);
+    vi.mocked(getGitBranchDetail).mockImplementation(realApi.getGitBranchDetail);
+
+    const user = userEvent.setup();
+    render(<RepoPage />);
+
+    await screen.findAllByTestId('repo-commit');
+
+    await user.click(screen.getByRole('button', { name: 'Commit f1 on feature' }));
+    expect(await screen.findByTestId('commit-message')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+
+    await user.click(screen.getByRole('button', { name: 'Branch feature' }));
+    expect(await screen.findByTestId('branch-description')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+
+    // The screen and BOTH modals really were exercised -- otherwise "no
+    // non-GET request" would be vacuously true.
+    expect(recorded.some((r) => r.url.endsWith('/git-history'))).toBe(true);
+    expect(recorded.some((r) => r.url.endsWith('/git-history/commits/f1'))).toBe(true);
+    expect(recorded.some((r) => r.url.endsWith('/git-history/branches/b-feat'))).toBe(true);
+    expect(recorded.length).toBeGreaterThanOrEqual(4);
+
+    // FR-003: only GET. Asserted per request so the failure message names the
+    // offending URL and method.
+    for (const request of recorded) {
+      expect({ url: request.url, method: request.method }).toEqual({
+        url: request.url,
+        method: 'GET',
+      });
+    }
+    expect([...new Set(recorded.map((r) => r.method))]).toEqual(['GET']);
+  });
+});

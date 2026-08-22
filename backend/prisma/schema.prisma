@@ -30,6 +30,8 @@ model Project {
   labels      Label[]
   tickets     Ticket[]
   phases      Phase[]
+  gitBranches GitBranch[]
+  gitCommits  GitCommit[]
 
   @@map("projects")
 }
@@ -100,6 +102,7 @@ model Ticket {
   parent                 Ticket?               @relation("Subtickets", fields: [parentTicketId], references: [id], onDelete: Cascade)
   subtickets             Ticket[]              @relation("Subtickets")
   history                TicketStatusHistory[]
+  commitLinks            GitCommitTicket[]
 
   @@unique([projectId, number])
   @@map("tickets")
@@ -149,4 +152,119 @@ model Phase {
   tickets     Ticket[]
 
   @@map("phases")
+}
+
+/// Reported by the agent, never derived by the backend: the backend cannot see a
+/// working tree. The value is validated against this enum and anything else is a
+/// 400 VALIDATION. Precedence is applied when reporting, not only when drawing --
+/// a branch that is both merged and dirty is reported MERGED (FR-010, research R4).
+enum GitBranchState {
+  UNCOMMITTED
+  ACTIVE
+  MERGED
+}
+
+/// The letters `git diff --name-status` emits. A rename arrives as R###; the
+/// similarity score is discarded and only R is stored (D6).
+enum GitFileChange {
+  A
+  M
+  D
+  R
+}
+
+model GitBranch {
+  id                   String         @id @default(uuid())
+  projectId            String
+  name                 String
+  /// Reported by the agent. Checked before `state` when choosing a colour (FR-011).
+  isTrunk              Boolean        @default(false)
+  /// A plain branch name, deliberately NOT a self-referencing foreign key: an
+  /// optional self-relation would take Prisma's optionality-driven default
+  /// (SetNull) and would force branches to be synced in dependency order. The
+  /// drawn structure comes from GitCommit.parentShas regardless -- research R5.
+  forkedFromBranchName String?
+  /// Required with no default, so an omitted state is a validation error rather
+  /// than a silent UNCOMMITTED.
+  state                GitBranchState
+  /// Set by the server clock on every sync that carries this branch; never
+  /// client-supplied. A mirror that can be told it is fresh is not a mirror.
+  lastSyncedAt         DateTime
+  project              Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  commits              GitCommit[]
+
+  /// Branch identity within a project (FR-026): this is what makes a re-sync an
+  /// update instead of a duplicate.
+  @@unique([projectId, name])
+  @@map("git_branches")
+}
+
+model GitCommit {
+  id                 String            @id @default(uuid())
+  projectId          String
+  /// The branch the commit was INTRODUCED on. Set when the commit is first
+  /// recorded and NEVER updated, including when its branch is later merged into
+  /// the trunk (FR-024/D8). An invariant of the write path, not a hint.
+  branchId           String
+  sha                String
+  message            String
+  /// Author display name. No email is stored; none is needed and it is avoidable
+  /// personal data.
+  authorName         String
+  committedAt        DateTime
+  /// Recorded per D6. Never affects colour (FR-013).
+  pushed             Boolean           @default(false)
+  isMerge            Boolean           @default(false)
+  /// Ordered; parentShas[0] is the first parent. Empty for the root commit.
+  /// Source of every fork and merge edge (FR-007).
+  parentShas         String[]
+  /// How many changed files were NOT stored because the 500-file cap was hit
+  /// (FR-023). 0 means the stored list is complete.
+  truncatedFileCount Int               @default(0)
+  project            Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  branch             GitBranch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  files              GitCommitFile[]
+  ticketLinks        GitCommitTicket[]
+
+  /// A SHA appears at most once per project. This is what enforces D8/FR-024: a
+  /// commit cannot be re-attributed by appearing under a second branch.
+  @@unique([projectId, sha])
+  @@index([branchId])
+  @@map("git_commits")
+}
+
+model GitCommitFile {
+  id         String        @id @default(uuid())
+  commitId   String
+  /// Repository-relative path. For a rename, the new path.
+  path       String
+  changeType GitFileChange
+  commit     GitCommit     @relation(fields: [commitId], references: [id], onDelete: Cascade)
+
+  /// Makes a re-sync of the same commit idempotent (FR-026).
+  @@unique([commitId, path])
+  @@index([commitId])
+  @@map("git_commit_files")
+}
+
+/// Stores ONLY links the agent explicitly reported. Inferred links are never
+/// stored; they are derived when read (research R6, D9, FR-025). There is
+/// deliberately no `inferred` column -- a row's existence IS the claim that the
+/// link was reported.
+model GitCommitTicket {
+  id       String    @id @default(uuid())
+  commitId String
+  ticketId String
+  commit   GitCommit @relation(fields: [commitId], references: [id], onDelete: Cascade)
+  // onDelete: Cascade must stay explicit and is load-bearing. This relation is
+  // required, and Prisma's default onDelete for a REQUIRED relation is Restrict.
+  // Left implicit, this table would make deleting any ticket that has a commit
+  // link fail with a foreign-key error, silently breaking existing working
+  // behaviour (deleting a ticket). No Prisma command proves this -- only the
+  // regression test in tests/integration/tickets.test.ts does. See research R7.
+  ticket   Ticket    @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  /// Idempotent re-sync (FR-026).
+  @@unique([commitId, ticketId])
+  @@map("git_commit_tickets")
 }

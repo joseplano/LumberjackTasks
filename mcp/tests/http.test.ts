@@ -43,7 +43,7 @@ describe('streamable HTTP endpoint', () => {
     await client.connect(new StreamableHTTPClientTransport(mcpUrl));
 
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(18);
+    expect(tools).toHaveLength(19);
 
     const result = await client.callTool({ name: 'list_projects', arguments: {} });
     expect(result.isError).toBeFalsy();

@@ -1,0 +1,896 @@
+import { prisma } from '../db';
+import { ApiError } from '../middleware/errors';
+
+/**
+ * The repository-history sync service: the ONLY write path for feature
+ * 004-view-repo-git-tree.
+ *
+ * Every rule implemented here is numbered in
+ * `specs/004-view-repo-git-tree/contracts/http-api.md` section 4, and the
+ * numbers are quoted at the code that enforces them. The two that are easiest
+ * to break silently are:
+ *
+ *   - rule 3 (attribution is fixed): an already-recorded SHA never changes its
+ *     `branchId`. Enforced structurally -- the update payload has no `branchId`
+ *     key at all, so no future edit can re-attribute a commit by accident.
+ *   - rule 11 (one transaction): every DB-dependent check runs INSIDE the
+ *     interactive transaction, so a rejection rolls the whole batch back and a
+ *     failed sync records nothing.
+ *
+ * Validation is hand-rolled to match the rest of `src/services` (there is no
+ * validation library in this package, on purpose). Constitution Principle IV:
+ * nothing is skipped or trimmed silently -- every rejection names the field.
+ */
+
+/** Contract section 4 rule 5 (research R2): the batch cap that keeps a sync
+ * inside the global `express.json({ limit: '100kb' })` without weakening it. */
+export const MAX_COMMITS_PER_BATCH = 50;
+/** Contract section 4 rule 6 (FR-023/D7): the per-commit file cap. Exceeding it
+ * is a rejection, never a silent trim -- the agent must truncate itself and
+ * report the remainder in `truncatedFileCount`. */
+export const MAX_FILES_PER_COMMIT = 500;
+
+const BRANCH_STATES = ['UNCOMMITTED', 'ACTIVE', 'MERGED'] as const;
+const FILE_CHANGES = ['A', 'M', 'D', 'R'] as const;
+type BranchState = (typeof BRANCH_STATES)[number];
+type FileChange = (typeof FILE_CHANGES)[number];
+
+/** A full git object name: 40 LOWERCASE hex characters (contract rule 7). An
+ * abbreviated or upper-cased SHA would not join to anything in `parentShas`. */
+const SHA_PATTERN = /^[0-9a-f]{40}$/;
+
+interface ParsedBranch {
+  name: string;
+  isTrunk: boolean;
+  forkedFromBranchName: string | null;
+  state: BranchState;
+}
+
+interface ParsedFile {
+  path: string;
+  changeType: FileChange;
+}
+
+interface ParsedCommit {
+  sha: string;
+  branchName: string;
+  message: string;
+  authorName: string;
+  committedAt: Date;
+  pushed: boolean;
+  isMerge: boolean;
+  parentShas: string[];
+  files: ParsedFile[];
+  truncatedFileCount: number;
+  ticketIds: string[];
+}
+
+interface ParsedBatch {
+  branches: ParsedBranch[];
+  commits: ParsedCommit[];
+}
+
+export interface GitHistorySyncResult {
+  branchesUpserted: number;
+  commitsUpserted: number;
+  filesUpserted: number;
+  ticketLinksUpserted: number;
+  lastSyncedAt: string;
+}
+
+interface GitHistoryBranchSummary {
+  id: string;
+  name: string;
+  isTrunk: boolean;
+  forkedFromBranchName: string | null;
+  state: BranchState;
+  lastSyncedAt: string;
+}
+
+interface GitHistoryCommitSummary {
+  sha: string;
+  branchId: string;
+  message: string;
+  authorName: string;
+  committedAt: string;
+  pushed: boolean;
+  isMerge: boolean;
+  parentShas: string[];
+  fileCount: number;
+  truncatedFileCount: number;
+}
+
+export interface GitHistoryListResult {
+  lastSyncedAt: string | null;
+  branches: GitHistoryBranchSummary[];
+  commits: GitHistoryCommitSummary[];
+}
+
+function invalid(message: string): never {
+  throw new ApiError(400, 'VALIDATION', message);
+}
+
+function asObject(value: unknown, field: string): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    invalid(`${field} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function asArray(value: unknown, field: string): unknown[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) invalid(`${field} must be an array`);
+  return value;
+}
+
+/**
+ * Rule 7 + rule 3: `parentShas` is not marked optional in
+ * contracts/mcp-tool.md, and rule 3 updates every field other than `branchId`
+ * on a re-report. Defaulting an absent array to `[]` would therefore let a
+ * re-report silently erase the recorded parents of an existing commit -- and
+ * FR-007 derives every fork and merge edge from exactly that field, so the tree
+ * would quietly draw the wrong shape with a 200 and no diagnostic. Required, no
+ * default. An empty array is still legal input: a root commit has no parents,
+ * it just has to say so.
+ */
+function requiredArray(value: unknown, field: string): unknown[] {
+  if (value === undefined || value === null) {
+    invalid(`${field} is required and must be an array`);
+  }
+  if (!Array.isArray(value)) invalid(`${field} must be an array`);
+  return value as unknown[];
+}
+
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    invalid(`${field} must be a non-empty string`);
+  }
+  return value;
+}
+
+/**
+ * Rule 7: the booleans of contracts/mcp-tool.md are plain booleans -- only
+ * `forkedFromBranchName` and `ticketIds` are marked optional there. They are
+ * therefore REQUIRED with no default, for the same reason `state` is
+ * (data-model.md): defaulting an omitted `isTrunk` to `false` would let a
+ * re-report of `{ name: 'main', state: 'ACTIVE' }` silently demote the trunk
+ * and leave the project with none (rule 9), and an omitted `isMerge` would
+ * clear the merge flag and drop a merge edge at draw time (FR-007) -- both with
+ * a 200 and no diagnostic, which Principle IV forbids.
+ */
+function requiredBoolean(value: unknown, field: string): boolean {
+  if (value === undefined || value === null) {
+    invalid(`${field} is required and must be a boolean`);
+  }
+  if (typeof value !== 'boolean') invalid(`${field} must be a boolean`);
+  return value;
+}
+
+function optionalNullableString(value: unknown, field: string): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') invalid(`${field} must be a string or null`);
+  return value.trim() === '' ? null : value;
+}
+
+/**
+ * Rule 7 + rule 2: `truncatedFileCount` is the honesty field. Defaulting an
+ * absent value to 0 silently asserts "the stored file list is complete", which
+ * is the exact claim FR-017 and contract rule 2 exist to stop the product from
+ * making falsely -- and on a re-report (rule 3) it would also overwrite a
+ * recorded remainder with 0. An honesty field is never inferred: required, no
+ * default. 0 remains a legal value, explicitly stated.
+ */
+function requiredNonNegativeInt(value: unknown, field: string): number {
+  if (value === undefined || value === null) {
+    invalid(`${field} is required and must be an integer of 0 or more`);
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    invalid(`${field} must be an integer of 0 or more`);
+  }
+  return value;
+}
+
+function enumValue<T extends string>(
+  value: unknown,
+  field: string,
+  allowed: readonly T[],
+): T {
+  if (typeof value !== 'string' || !allowed.includes(value as T)) {
+    invalid(`${field} must be one of ${allowed.join(', ')}`);
+  }
+  return value as T;
+}
+
+function shaValue(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !SHA_PATTERN.test(value)) {
+    invalid(`${field} must be 40 lowercase hexadecimal characters`);
+  }
+  return value;
+}
+
+function dateValue(value: unknown, field: string): Date {
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    invalid(`${field} must be a date the server can parse`);
+  }
+  const parsed = new Date(value as string | number);
+  if (Number.isNaN(parsed.getTime())) {
+    invalid(`${field} must be a date the server can parse`);
+  }
+  return parsed;
+}
+
+function parseBranch(raw: unknown, index: number): ParsedBranch {
+  const field = `branches[${index}]`;
+  const branch = asObject(raw, field);
+  return {
+    name: requiredString(branch.name, `${field}.name`),
+    isTrunk: requiredBoolean(branch.isTrunk, `${field}.isTrunk`),
+    forkedFromBranchName: optionalNullableString(
+      branch.forkedFromBranchName,
+      `${field}.forkedFromBranchName`,
+    ),
+    // Required with no default: an omitted state is a validation error rather
+    // than a silent UNCOMMITTED (data-model.md).
+    state: enumValue(branch.state, `${field}.state`, BRANCH_STATES),
+  };
+}
+
+function parseFile(raw: unknown, field: string): ParsedFile {
+  const file = asObject(raw, field);
+  return {
+    path: requiredString(file.path, `${field}.path`),
+    changeType: enumValue(file.changeType, `${field}.changeType`, FILE_CHANGES),
+  };
+}
+
+function parseCommit(raw: unknown, index: number): ParsedCommit {
+  const field = `commits[${index}]`;
+  const commit = asObject(raw, field);
+
+  // `files` is the one list that stays optional and defaults to []. Sync is
+  // additive and never deletes (rule 2 / FR-032), so an absent files array adds
+  // nothing and destroys nothing -- there is no silent overwrite to guard
+  // against, and requiring it would reject the legitimate "no files recorded
+  // for this commit" report. Contrast requiredArray/requiredNonNegativeInt above.
+  const rawFiles = asArray(commit.files, `${field}.files`);
+  // Rule 6: rejected, never trimmed. The remainder belongs in truncatedFileCount.
+  if (rawFiles.length > MAX_FILES_PER_COMMIT) {
+    invalid(
+      `${field}.files must contain at most ${MAX_FILES_PER_COMMIT} entries (received ${rawFiles.length}); ` +
+        `truncate the list and report the remainder in ${field}.truncatedFileCount`,
+    );
+  }
+  const files = rawFiles.map((file, i) => parseFile(file, `${field}.files[${i}]`));
+  const seenPaths = new Set<string>();
+  for (const file of files) {
+    // Two entries for one path in one commit would make the write order decide
+    // the stored changeType -- a silent resolution, which Principle IV forbids.
+    if (seenPaths.has(file.path)) {
+      invalid(`${field}.files contains the path "${file.path}" more than once`);
+    }
+    seenPaths.add(file.path);
+  }
+
+  const rawTicketIds = asArray(commit.ticketIds, `${field}.ticketIds`);
+  const ticketIds = [
+    ...new Set(
+      rawTicketIds.map((id, i) => requiredString(id, `${field}.ticketIds[${i}]`)),
+    ),
+  ];
+
+  const parentShas = requiredArray(commit.parentShas, `${field}.parentShas`).map((parent, i) =>
+    shaValue(parent, `${field}.parentShas[${i}]`),
+  );
+
+  return {
+    sha: shaValue(commit.sha, `${field}.sha`),
+    branchName: requiredString(commit.branchName, `${field}.branchName`),
+    message: requiredString(commit.message, `${field}.message`),
+    authorName: requiredString(commit.authorName, `${field}.authorName`),
+    committedAt: dateValue(commit.committedAt, `${field}.committedAt`),
+    pushed: requiredBoolean(commit.pushed, `${field}.pushed`),
+    isMerge: requiredBoolean(commit.isMerge, `${field}.isMerge`),
+    parentShas,
+    files,
+    truncatedFileCount: requiredNonNegativeInt(
+      commit.truncatedFileCount,
+      `${field}.truncatedFileCount`,
+    ),
+    ticketIds,
+  };
+}
+
+/**
+ * Shape validation: everything that can be decided without touching the
+ * database. Unknown/extra properties are IGNORED rather than rejected (a
+ * client-supplied `lastSyncedAt` is simply ignored, rule 4); the named fields
+ * are validated strictly (rule 7).
+ */
+function parseBatch(body: unknown): ParsedBatch {
+  const root = asObject(body ?? {}, 'body');
+
+  const branches = asArray(root.branches, 'branches').map(parseBranch);
+  const seenBranchNames = new Set<string>();
+  branches.forEach((branch, index) => {
+    if (seenBranchNames.has(branch.name)) {
+      invalid(`branches[${index}].name repeats "${branch.name}"; each branch may appear once per batch`);
+    }
+    seenBranchNames.add(branch.name);
+  });
+
+  const rawCommits = asArray(root.commits, 'commits');
+  // Rule 5: rejected, never trimmed. The whole history is loaded by calling
+  // repeatedly; that is also how the D4 backfill works.
+  if (rawCommits.length > MAX_COMMITS_PER_BATCH) {
+    invalid(
+      `commits must contain at most ${MAX_COMMITS_PER_BATCH} entries per request (received ${rawCommits.length}); ` +
+        'split the history and sync it in several calls',
+    );
+  }
+  const commits = rawCommits.map(parseCommit);
+  const seenShas = new Set<string>();
+  commits.forEach((commit, index) => {
+    if (seenShas.has(commit.sha)) {
+      invalid(`commits[${index}].sha repeats "${commit.sha}"; each commit may appear once per batch`);
+    }
+    seenShas.add(commit.sha);
+  });
+
+  return { branches, commits };
+}
+
+/**
+ * Rule 9: at most one branch per project may be the trunk. The effective trunk
+ * set is what the project would hold AFTER this batch: already-recorded trunks
+ * that this batch does not re-report, plus the trunks the batch declares. That
+ * covers both listed cases (two trunks inside one batch; one in the batch while
+ * a DIFFERENT branch is already trunk) while allowing the same branch to be
+ * re-reported as trunk, and allowing a batch that moves the trunk by demoting
+ * the old one in the same call.
+ */
+function assertSingleTrunk(batch: ParsedBatch, existing: { name: string; isTrunk: boolean }[]) {
+  const batchNames = new Set(batch.branches.map((branch) => branch.name));
+  const trunks = new Set<string>();
+  for (const branch of existing) {
+    if (branch.isTrunk && !batchNames.has(branch.name)) trunks.add(branch.name);
+  }
+  for (const branch of batch.branches) {
+    if (branch.isTrunk) trunks.add(branch.name);
+  }
+  if (trunks.size > 1) {
+    const named = [...trunks].map((name) => `"${name}"`).join(' and ');
+    invalid(
+      `isTrunk: a project may have at most one trunk branch, but this batch would leave ${trunks.size} (${named})`,
+    );
+  }
+}
+
+export async function syncGitHistory(
+  projectId: string,
+  body: unknown,
+): Promise<GitHistorySyncResult> {
+  // Shape validation first: it needs no database and no project, so a malformed
+  // batch never opens a transaction.
+  const batch = parseBatch(body);
+  // Rule 4: the server clock, once per batch. A client-supplied value is
+  // ignored -- a mirror that can be told it is fresh is not a mirror.
+  const syncedAt = new Date();
+
+  return prisma.$transaction(
+    async (tx) => {
+      // Rule 12.
+      const project = await tx.project.findUnique({ where: { id: projectId }, select: { id: true } });
+      if (!project) throw new ApiError(404, 'NOT_FOUND', 'Project not found');
+
+      const existingBranches = await tx.gitBranch.findMany({
+        where: { projectId },
+        select: { id: true, name: true, isTrunk: true },
+      });
+
+      assertSingleTrunk(batch, existingBranches);
+
+      // Rule 7, last clause: a commit is never attached to an invented branch.
+      // The branch must be in this batch or already recorded.
+      const knownBranchNames = new Set([
+        ...existingBranches.map((branch) => branch.name),
+        ...batch.branches.map((branch) => branch.name),
+      ]);
+      batch.commits.forEach((commit, index) => {
+        if (!knownBranchNames.has(commit.branchName)) {
+          invalid(
+            `commits[${index}].branchName "${commit.branchName}" is neither declared in this batch's branches ` +
+              'nor already recorded for this project',
+          );
+        }
+      });
+
+      // Rule 8, first half: one read for every ticket id the batch names. The
+      // per-commit rejection itself happens further down, at the point each
+      // commit's links are written -- see the note there.
+      const requestedTicketIds = [...new Set(batch.commits.flatMap((commit) => commit.ticketIds))];
+      const ownedTicketIds = new Set<string>();
+      if (requestedTicketIds.length > 0) {
+        const projectTickets = await tx.ticket.findMany({
+          where: { id: { in: requestedTicketIds }, projectId },
+          select: { id: true },
+        });
+        for (const ticket of projectTickets) ownedTicketIds.add(ticket.id);
+      }
+
+      // ---- writes -------------------------------------------------------
+      // Rule 2: additive only. Nothing below deletes a branch, commit, file or
+      // ticket link; a branch absent from this batch keeps its record and its
+      // previous lastSyncedAt because it is simply never touched.
+      const branchIdsByName = new Map(existingBranches.map((branch) => [branch.name, branch.id]));
+
+      for (const branch of batch.branches) {
+        // Rule 1: branches match on (projectId, name).
+        const row = await tx.gitBranch.upsert({
+          where: { projectId_name: { projectId, name: branch.name } },
+          create: {
+            projectId,
+            name: branch.name,
+            isTrunk: branch.isTrunk,
+            forkedFromBranchName: branch.forkedFromBranchName,
+            state: branch.state,
+            lastSyncedAt: syncedAt,
+          },
+          update: {
+            isTrunk: branch.isTrunk,
+            forkedFromBranchName: branch.forkedFromBranchName,
+            state: branch.state,
+            lastSyncedAt: syncedAt,
+          },
+          select: { id: true },
+        });
+        branchIdsByName.set(branch.name, row.id);
+      }
+
+      let filesUpserted = 0;
+      let ticketLinksUpserted = 0;
+
+      for (const [index, commit] of batch.commits.entries()) {
+        // Rule 1: commits match on (projectId, sha).
+        const existingCommit = await tx.gitCommit.findUnique({
+          where: { projectId_sha: { projectId, sha: commit.sha } },
+          select: { id: true },
+        });
+
+        let commitId: string;
+        if (existingCommit) {
+          // Rule 3 (FR-024/D8): `branchId` is deliberately ABSENT from this
+          // payload. The commit stays attributed to the branch it was
+          // introduced on even when the batch reports another one; every other
+          // field is updated.
+          await tx.gitCommit.update({
+            where: { id: existingCommit.id },
+            data: {
+              message: commit.message,
+              authorName: commit.authorName,
+              committedAt: commit.committedAt,
+              pushed: commit.pushed,
+              isMerge: commit.isMerge,
+              parentShas: commit.parentShas,
+              truncatedFileCount: commit.truncatedFileCount,
+            },
+          });
+          commitId = existingCommit.id;
+        } else {
+          const created = await tx.gitCommit.create({
+            data: {
+              projectId,
+              branchId: branchIdsByName.get(commit.branchName)!,
+              sha: commit.sha,
+              message: commit.message,
+              authorName: commit.authorName,
+              committedAt: commit.committedAt,
+              pushed: commit.pushed,
+              isMerge: commit.isMerge,
+              parentShas: commit.parentShas,
+              truncatedFileCount: commit.truncatedFileCount,
+            },
+            select: { id: true },
+          });
+          commitId = created.id;
+        }
+
+        for (const file of commit.files) {
+          // Rule 1: files match on (commitId, path).
+          await tx.gitCommitFile.upsert({
+            where: { commitId_path: { commitId, path: file.path } },
+            create: { commitId, path: file.path, changeType: file.changeType },
+            update: { changeType: file.changeType },
+            select: { id: true },
+          });
+          filesUpserted += 1;
+        }
+
+        if (commit.ticketIds.length > 0) {
+          // Rule 8, second half: a ticket id that is not this project's is
+          // rejected by name, never skipped silently (Principle IV). The check
+          // lives HERE, at the write, rather than up with its read: by this
+          // point the batch's branches and every earlier commit have already
+          // been written, so the rejection is a real mid-write abort and rule 11
+          // (one transaction) is what makes the batch record nothing. Hoisting
+          // it back above the writes would make the transaction unobservable --
+          // and untestable.
+          for (const ticketId of commit.ticketIds) {
+            if (!ownedTicketIds.has(ticketId)) {
+              invalid(
+                `commits[${index}].ticketIds contains "${ticketId}", which is not a ticket of this project`,
+              );
+            }
+          }
+          // Rule 1: ticket links match on (commitId, ticketId). There is nothing
+          // to update on a link -- its existence IS the claim that the agent
+          // reported it (research R6) -- so an insert that skips duplicates is
+          // the whole upsert.
+          await tx.gitCommitTicket.createMany({
+            data: commit.ticketIds.map((ticketId) => ({ commitId, ticketId })),
+            skipDuplicates: true,
+          });
+          ticketLinksUpserted += commit.ticketIds.length;
+        }
+      }
+
+      return {
+        branchesUpserted: batch.branches.length,
+        commitsUpserted: batch.commits.length,
+        filesUpserted,
+        ticketLinksUpserted,
+        lastSyncedAt: syncedAt.toISOString(),
+      };
+    },
+    // A full batch is up to 50 commits of up to 500 files; the default 5s
+    // interactive-transaction budget is not enough for the upper end of that.
+    { maxWait: 15_000, timeout: 120_000 },
+  );
+}
+
+/**
+ * `GET /api/v1/projects/:projectId/git-history` (contract section 1): the only
+ * read path this file exposes for now. Returns everything the tree needs to
+ * draw itself, and nothing else -- no file lists (research R12).
+ *
+ * Rule 5: an unknown `projectId` is a 404. Rule 2: an existing project that has
+ * never been synced (zero `GitBranch` rows, data-model.md "Derived values") is a
+ * 200 with `{ lastSyncedAt: null, branches: [], commits: [] }` -- the client
+ * must be able to tell "never synced" apart from "no such project" and from a
+ * transport failure (FR-033), so those two states are deliberately different
+ * status codes here.
+ */
+export async function listGitHistory(projectId: string): Promise<GitHistoryListResult> {
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true } });
+  if (!project) throw new ApiError(404, 'NOT_FOUND', 'Project not found');
+
+  const branches = await prisma.gitBranch.findMany({ where: { projectId } });
+
+  // "Never synced" (data-model.md): zero branches for an existing project. Not a
+  // 404 -- rule 2. Short-circuiting here also means an un-synced project never
+  // touches gitCommit at all.
+  if (branches.length === 0) {
+    return { lastSyncedAt: null, branches: [], commits: [] };
+  }
+
+  // Rule 1: the maximum lastSyncedAt across the project's branches, computed
+  // here rather than stored anywhere (data-model.md "Derived values").
+  const lastSyncedAt = branches.reduce(
+    (max, branch) => (branch.lastSyncedAt > max ? branch.lastSyncedAt : max),
+    branches[0].lastSyncedAt,
+  );
+
+  // Rule 3: ordered by committedAt ascending, ties broken by sha ascending. The
+  // tie-break exists because the frontend's geometry function (research R11)
+  // must be a total, assertable function of this list -- without it, two
+  // commits sharing a committedAt would swap order between runs.
+  const commits = await prisma.gitCommit.findMany({
+    where: { projectId },
+    orderBy: [{ committedAt: 'asc' }, { sha: 'asc' }],
+    include: { _count: { select: { files: true } } },
+  });
+
+  return {
+    lastSyncedAt: lastSyncedAt.toISOString(),
+    branches: branches.map((branch) => ({
+      id: branch.id,
+      name: branch.name,
+      isTrunk: branch.isTrunk,
+      forkedFromBranchName: branch.forkedFromBranchName,
+      state: branch.state,
+      lastSyncedAt: branch.lastSyncedAt.toISOString(),
+    })),
+    // Rule 4 + research R12: fileCount is the number of STORED file rows, never
+    // the paths themselves. truncatedFileCount travels alongside it unchanged;
+    // fileCount + truncatedFileCount is the real total the client can report.
+    commits: commits.map((commit) => ({
+      sha: commit.sha,
+      branchId: commit.branchId,
+      message: commit.message,
+      authorName: commit.authorName,
+      committedAt: commit.committedAt.toISOString(),
+      pushed: commit.pushed,
+      isMerge: commit.isMerge,
+      parentShas: commit.parentShas,
+      fileCount: commit._count.files,
+      truncatedFileCount: commit.truncatedFileCount,
+    })),
+  };
+}
+
+/**
+ * Contract section 3 rule 5 (FR-015): the branch modal shows at most 50 commit
+ * messages, newest first, while `commitCount` carries the true total -- a
+ * shortened list is never presented as the whole.
+ */
+export const MAX_BRANCH_COMMIT_MESSAGES = 50;
+
+/** A ticket as it travels in a read response. `source` is ALWAYS present:
+ * contract section 2 rule 4 is the machine-readable half of D9 -- an inference
+ * is never presented as reported data (FR-025). */
+export interface GitTicketRefResult {
+  id: string;
+  number: number;
+  name: string;
+  source: 'reported' | 'inferred';
+}
+
+interface GitFileRefResult {
+  path: string;
+  changeType: FileChange;
+}
+
+export interface GitCommitDetailResult {
+  sha: string;
+  branchId: string;
+  branchName: string;
+  message: string;
+  authorName: string;
+  committedAt: string;
+  pushed: boolean;
+  isMerge: boolean;
+  parentShas: string[];
+  files: GitFileRefResult[];
+  truncatedFileCount: number;
+  tickets: GitTicketRefResult[];
+}
+
+export interface GitBranchDetailResult {
+  id: string;
+  name: string;
+  isTrunk: boolean;
+  state: BranchState;
+  forkedFromBranchName: string | null;
+  lastSyncedAt: string;
+  commitCount: number;
+  commitMessages: string[];
+  files: GitFileRefResult[];
+  truncatedFileCount: number;
+  tickets: GitTicketRefResult[];
+}
+
+/** The three fields a ticket contributes to a read response, before a `source`
+ * is attached to it. */
+interface TicketRow {
+  id: string;
+  number: number;
+  name: string;
+}
+
+/** Both endpoints return tickets in a stable order. The contract does not fix
+ * one, and an unordered list would still be correct -- but an arbitrary one
+ * makes the responses unassertable, so ticket number ascending it is. */
+function byTicketNumber<T extends TicketRow>(tickets: T[]): T[] {
+  return [...tickets].sort((a, b) => a.number - b.number);
+}
+
+/**
+ * Research R6: the tickets whose *stored* `gitBranch` equals this branch's
+ * name. Read every time, stored never. `Ticket.gitBranch` keeps its existing
+ * doctrine (schema.prisma: "no generator and no read-time derivation") -- that
+ * rule governs the stored branch value, which nothing here writes.
+ */
+function loadInferredTickets(projectId: string, branchName: string): Promise<TicketRow[]> {
+  return prisma.ticket.findMany({
+    where: { projectId, gitBranch: branchName },
+    orderBy: { number: 'asc' },
+    select: { id: true, number: true, name: true },
+  });
+}
+
+/**
+ * Contract section 2 rule 3, written ONCE and reused by both read endpoints so
+ * the two can never drift apart:
+ *
+ *   - at least one reported link -> exactly those links, every one "reported".
+ *     Inference is NOT mixed in.
+ *   - no reported link           -> the branch-matched tickets, every one
+ *     "inferred".
+ *   - neither                    -> [].
+ *
+ * Rule 4 holds structurally: `source` is written by this function and there is
+ * no path through it that produces a ticket without one.
+ *
+ * `loadInferred` is a thunk rather than a list because the inference costs a
+ * query that a commit with reported links must not pay -- and because the
+ * branch endpoint hands in a MEMOISED thunk, so a branch of 50 commits still
+ * infers at most once.
+ */
+async function deriveCommitTickets(
+  reported: TicketRow[],
+  loadInferred: () => Promise<TicketRow[]>,
+): Promise<GitTicketRefResult[]> {
+  if (reported.length > 0) {
+    return byTicketNumber(reported).map((ticket) => ({ ...ticket, source: 'reported' as const }));
+  }
+  return byTicketNumber(await loadInferred()).map((ticket) => ({
+    ...ticket,
+    source: 'inferred' as const,
+  }));
+}
+
+function memoize<T>(load: () => Promise<T>): () => Promise<T> {
+  let cached: Promise<T> | undefined;
+  return () => {
+    cached ??= load();
+    return cached;
+  };
+}
+
+async function getProjectOr404(projectId: string) {
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true } });
+  if (!project) throw new ApiError(404, 'NOT_FOUND', 'Project not found');
+  return project;
+}
+
+/**
+ * `GET /api/v1/projects/:projectId/git-history/commits/:sha` (contract
+ * section 2): one commit's files and tickets, for the commit modal.
+ *
+ * Rule 1 is enforced HERE, on the read, rather than trusted from the write
+ * path. The write path's 500-file cap is per BATCH, and sync is additive and
+ * never deletes (section 4 rule 2 / FR-032), so re-reporting one sha with a
+ * different set of 500 paths leaves 1000 rows on that commit. Ordering by
+ * `path` and taking 500 is what makes rule 1 true regardless of how the rows
+ * got there. `truncatedFileCount` is NOT adjusted to compensate: it is the
+ * commit row's own honesty field (rule 2) and belongs to the reporter.
+ */
+export async function getGitCommitDetail(
+  projectId: string,
+  sha: string,
+): Promise<GitCommitDetailResult> {
+  await getProjectOr404(projectId);
+
+  const commit = await prisma.gitCommit.findUnique({
+    where: { projectId_sha: { projectId, sha } },
+    include: {
+      branch: { select: { id: true, name: true } },
+      // Rule 1: ordered by path ascending, capped at 500 -- in the database,
+      // so a commit carrying 1000 rows never materialises them all.
+      files: {
+        orderBy: { path: 'asc' },
+        take: MAX_FILES_PER_COMMIT,
+        select: { path: true, changeType: true },
+      },
+      // Every row here is, by definition, a link the agent REPORTED: the table
+      // stores nothing else (research R6, schema.prisma).
+      ticketLinks: { select: { ticket: { select: { id: true, number: true, name: true } } } },
+    },
+  });
+  // Rule 5. The lookup is keyed on (projectId, sha), so a sha recorded on
+  // another project is unknown here -- projects do not leak into each other
+  // even though the system is single-tenant (FR-030).
+  if (!commit) throw new ApiError(404, 'NOT_FOUND', 'Commit not found');
+
+  const tickets = await deriveCommitTickets(
+    commit.ticketLinks.map((link) => link.ticket),
+    () => loadInferredTickets(projectId, commit.branch.name),
+  );
+
+  return {
+    sha: commit.sha,
+    branchId: commit.branchId,
+    branchName: commit.branch.name,
+    message: commit.message,
+    authorName: commit.authorName,
+    committedAt: commit.committedAt.toISOString(),
+    pushed: commit.pushed,
+    isMerge: commit.isMerge,
+    parentShas: commit.parentShas,
+    files: commit.files.map((file) => ({ path: file.path, changeType: file.changeType })),
+    truncatedFileCount: commit.truncatedFileCount,
+    tickets,
+  };
+}
+
+/**
+ * `GET /api/v1/projects/:projectId/git-history/branches/:branchId` (contract
+ * section 3): one branch's aggregate, for the branch modal.
+ *
+ * Keyed on the id and not the name because branch names contain `/`
+ * (`chore/ignore-mcp-bot-password` in this very repository), which cannot
+ * travel in one path segment without double-encoding that proxies mangle
+ * (research R12).
+ *
+ * There is deliberately no `description` field: FR-015 and rule 4 make the
+ * description the CLIENT's composition of `name`, `state` and `commitMessages`.
+ * Nothing authored it, so nothing here may claim to return it.
+ */
+export async function getGitBranchDetail(
+  projectId: string,
+  branchId: string,
+): Promise<GitBranchDetailResult> {
+  await getProjectOr404(projectId);
+
+  // Rule 6, both halves in one query: an unknown id and another project's
+  // branch are the same 404, and neither reveals that the other project's
+  // branch exists.
+  const branch = await prisma.gitBranch.findFirst({ where: { id: branchId, projectId } });
+  if (!branch) throw new ApiError(404, 'NOT_FOUND', 'Branch not found');
+
+  // The branch's commits are the ones INTRODUCED on it: `branchId` is set once
+  // and never updated (FR-024/D8), so this is attribution, not a guess.
+  //
+  // Ordered ASCENDING by (committedAt, sha) -- the same total order section 1
+  // rule 3 fixes for the tree. Rule 1's "the most recent commit's change type
+  // wins" then falls out of iterating in that order and letting a later commit
+  // overwrite an earlier one, which also settles the identical-committedAt tie
+  // in favour of the higher sha.
+  const commits = await prisma.gitCommit.findMany({
+    where: { branchId: branch.id },
+    orderBy: [{ committedAt: 'asc' }, { sha: 'asc' }],
+    include: {
+      files: { orderBy: { path: 'asc' }, select: { path: true, changeType: true } },
+      ticketLinks: { select: { ticket: { select: { id: true, number: true, name: true } } } },
+    },
+  });
+
+  // Rule 1 (the distinct union) and rule 2 (the sum) in one pass.
+  const changeTypeByPath = new Map<string, FileChange>();
+  let truncatedFileCount = 0;
+  for (const commit of commits) {
+    truncatedFileCount += commit.truncatedFileCount;
+    for (const file of commit.files) changeTypeByPath.set(file.path, file.changeType);
+  }
+  const files = [...changeTypeByPath.entries()]
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([path, changeType]) => ({ path, changeType }));
+
+  // Rule 3: the union of each commit's tickets under section 2 rule 3,
+  // de-duplicated by id, with `reported` on ANY commit beating `inferred` on
+  // any other -- in both directions, so the merge does not depend on the order
+  // the commits happen to be visited in. The inference itself is memoised:
+  // every commit of this branch would infer the same set, from the same name.
+  const loadInferred = memoize(() => loadInferredTickets(projectId, branch.name));
+  const ticketsById = new Map<string, GitTicketRefResult>();
+  for (const commit of commits) {
+    const refs = await deriveCommitTickets(
+      commit.ticketLinks.map((link) => link.ticket),
+      loadInferred,
+    );
+    for (const ref of refs) {
+      const existing = ticketsById.get(ref.id);
+      if (!existing || (existing.source === 'inferred' && ref.source === 'reported')) {
+        ticketsById.set(ref.id, ref);
+      }
+    }
+  }
+
+  return {
+    id: branch.id,
+    name: branch.name,
+    isTrunk: branch.isTrunk,
+    state: branch.state,
+    forkedFromBranchName: branch.forkedFromBranchName,
+    lastSyncedAt: branch.lastSyncedAt.toISOString(),
+    // Rule 5: the TRUE total travels alongside the capped list, so the client
+    // can say the messages shown are a subset rather than imply completeness.
+    commitCount: commits.length,
+    commitMessages: [...commits]
+      .reverse()
+      .slice(0, MAX_BRANCH_COMMIT_MESSAGES)
+      .map((commit) => commit.message),
+    files,
+    truncatedFileCount,
+    tickets: byTicketNumber([...ticketsById.values()]),
+  };
+}

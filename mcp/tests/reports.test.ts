@@ -14,11 +14,11 @@ afterEach(() => {
 });
 
 describe('report tools', () => {
-  it('completes the 18-tool inventory', async () => {
+  it('completes the 19-tool inventory', async () => {
     const { client, close } = await connectClient();
     const names = (await client.listTools()).tools.map((t) => t.name);
-    expect(names).toHaveLength(18);
-    for (const name of ['get_reports', 'get_token_usage', 'get_time_totals']) {
+    expect(names).toHaveLength(19);
+    for (const name of ['get_reports', 'get_token_usage', 'get_time_totals', 'sync_git_history']) {
       expect(names).toContain(name);
     }
     await close();

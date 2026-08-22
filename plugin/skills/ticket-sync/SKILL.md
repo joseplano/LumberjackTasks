@@ -60,6 +60,106 @@ The Lumberjack Tasks system is the source of truth for work in this repo. Every 
      - Report **only what the command printed**. Never invent, derive, slugify or "tidy" a branch name, and never build one from the ticket's title or number.
      - If the command outputs the literal `HEAD` (detached), report **nothing**: omit `branch` entirely and do not send a commit hash instead.
 
+## Repository history sync
+
+The **View repo** screen draws the repository's branches and commits as an SVG tree. It is fed by
+`sync_git_history`, a mirror tool: it changes nothing in the repository, only records what the
+repository already contains.
+
+- **When to sync.** After committing, and after changing branch. Do this deliberately, as a normal
+  step of the workflow above — never from a hook, since a hook shelling out to git on every tool
+  use is heavy and would fail silently, which this skill's tools never do.
+- **What to run.**
+  - `git branch --format='%(refname:short)'` — the branches to report.
+  - `git branch --merged main --format='%(refname:short)'` — which of them are merged (see state
+    precedence below).
+  - `git status --porcelain` — whether the **currently checked-out** branch's working tree is
+    dirty.
+  - `git log --first-parent --format='%H|%P|%an|%aI|%s' --name-status <branch>` — the commits to
+    attribute to that branch, with parent SHAs (`%P`), author, ISO date, subject and the changed
+    files. **`--first-parent` is not optional** — see **Which branch a commit belongs to** below.
+  - `git log --format=%H --branches --not --remotes` — the unpushed set, computed once per sync
+    (see **Deriving `commits[].pushed`** below), not shelled out per commit.
+- **Which branch a commit belongs to.** D8/FR-024 attribute a commit to the branch it was
+  introduced on, *determined by its first parent*, and the backend makes that attribution
+  **permanent on first report**: once a sha is recorded, its `branchId` is never updated. A wrong
+  first guess is uncorrectable, so get the walk right the first time.
+  1. **Sync the trunk (`main`) first**, with `git log --first-parent main`. This yields only the
+     trunk's own commits and its merge commits — not the commits that arrived through those merges.
+  2. **Then every other branch**, each with `git log --first-parent <branch>`.
+  3. **Do not reorder this, and do not "optimise" the overlap away.** A branch's first-parent walk
+     still runs back through the trunk, so trunk commits are reported a second time — that is
+     harmless and intended: the backend keeps a sha's original `branchName`, so the trunk-first pass
+     has already claimed them. Ordering is the whole mechanism.
+  - **Never use plain `git log <branch>`** (no `--first-parent`): it returns the branch's entire
+    ancestry, so syncing a feature branch before the trunk permanently attributes the trunk's
+    commits to the feature branch.
+  - **Never use `git log <branch> --not main`** either: a branch that has already been merged has
+    no commits unreachable from the trunk, so this reports **zero** commits for every merged branch
+    and collapses it into the trunk lane.
+- **The one-time backfill (D4)** is the same walk over every branch, trunk first — not a single
+  pass. Loop over `git branch --format='%(refname:short)'`, doing `main` first, and run the
+  per-branch command above for each. **`git log --all` must not be used for this**: it emits no
+  branch information at all, so it cannot supply the required `commits[].branchName`, and guessing
+  one is rejected by the backend and fails the whole call. (`--all` also drags in
+  remote-tracking refs and tags, which are not branches to record.)
+- **Reading `--name-status` into `files[]`.** The status column is *not* always a single letter,
+  and `files[].changeType` accepts only `A`, `M`, `D`, `R` — anything else fails the entire batch
+  before it leaves the machine. Parse each tab-separated line like this:
+  - `A|M|D<TAB>path` → that letter, that path.
+  - `R###<TAB>old/path<TAB>new/path` (rename detection is on by default) → `changeType: "R"`, and
+    the path is the **second, destination** path. Strip the similarity score: `R100` → `R`.
+  - `C###<TAB>old/path<TAB>new/path` (only with `-C`) → the destination path, recorded as
+    `changeType: "A"` — a copy creates a new file there.
+  - `T` (typechange) → `M`.
+  - Anything else unexpected → `M`. Never send the raw score-suffixed status, and never invent a
+    fifth `changeType`.
+- **Deriving `commits[].isMerge`.** True when the commit has more than one parent — i.e.
+  `parentShas.length > 1`, from the same `%P` field that fills `parentShas`. Do not derive it from
+  the subject line.
+- **Deriving `commits[].pushed`.** A commit is pushed when it is reachable from a remote-tracking
+  ref. Run `git log --format=%H --branches --not --remotes` once per sync: it lists every commit on
+  a local branch that no remote-tracking ref contains. `pushed` is `false` for a sha in that set,
+  `true` for every other sha. This is accurate only as of the last `git fetch` — remote-tracking
+  refs are a local cache, so a commit pushed from another machine reads as unpushed until the next
+  fetch. That is a property of how git works, not a defect: the field is recorded for completeness
+  (D6) and, per FR-013, being pushed is not a branch state and must never influence tree colour.
+- **State precedence — merged is checked first.** For each branch:
+  1. Listed by `git branch --merged main`? → `MERGED`, **even if `git status --porcelain` is
+     non-empty**. Checking `git status` before the merged check gets a merged-and-dirty branch
+     wrong.
+  2. Otherwise, the working tree is dirty (`git status --porcelain` non-empty) **or** the branch
+     has no commit of its own → `UNCOMMITTED`.
+  3. Otherwise → `ACTIVE`.
+  A working tree belongs to whichever branch is checked out, so **only the currently checked-out
+  branch can ever be reported `UNCOMMITTED` from a dirty tree** — every other branch reaches
+  `UNCOMMITTED` only by having no commit of its own. Do not try to ask git whether an un-checked-out
+  branch is dirty; that information does not exist.
+- **Batching.** Send at most 50 commits per `sync_git_history` call. Loop, calling it repeatedly,
+  until the whole history (or the whole backfill) is loaded. A `413 PAYLOAD_TOO_LARGE` means send
+  fewer commits in that call — try that first. A batch of one commit is the floor, so if a *single*
+  commit still gets a `413` on its own, send fewer `files` for that commit and add the difference to
+  its `truncatedFileCount`. The remainder is always reported that way, never dropped silently.
+- **First-parent attribution never moves (D8).** A commit belongs to the branch it was introduced
+  on. If a commit's `sha` was already synced under one `branchName`, reporting it again under a
+  different `branchName` will **not** move it — the backend keeps the original attribution and
+  updates every other field. Re-running the backfill after new branches exist is safe for this
+  reason.
+- **The 500-file cap.** Report at most 500 `files` entries per commit; put the remainder in
+  `truncatedFileCount` (0 when the list is complete — never omit it). Sending more than 500 files
+  is rejected outright, not trimmed for you.
+- **`commits[].ticketIds`.** Optional, but report it whenever you know it: pass the ids of the
+  tickets the commit belongs to (the ones you are moving through the board for this work). The
+  screen uses those links directly; with them omitted it falls back to guessing from the branch
+  name and labels the association "inferred".
+- **Every boolean and `parentShas` are required, always** — `branches[].isTrunk`,
+  `commits[].pushed`, `commits[].isMerge`, and `commits[].parentShas` (`[]` for a root commit).
+  Omitting one is read as new information, not "unchanged", so it can silently overwrite recorded
+  truth on a later sync. Only `forkedFromBranchName`, `ticketIds` and `commits[].files` may be left
+  out.
+- **Tool name.** `mcp__plugin_lumberjack-tasks_lumberjack-tasks__sync_git_history` (load it with
+  ToolSearch if not yet loaded, same as the other tools in this skill).
+
 ## Rules
 
 - A repo with no `.claude/ticket-project.json` has not opted in, and the SessionStart hook stays silent there. Still use this skill when the user asks to track work or runs `/ticket-init` — step 1 resolves or creates the project and writes the mapping.

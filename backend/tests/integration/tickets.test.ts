@@ -864,4 +864,64 @@ describe('tickets', () => {
       }
     });
   });
+  // T010 (research R7/R9, data-model.md "GitCommitTicket"): the ONLY proof that
+  // GitCommitTicket -> Ticket is onDelete: Cascade and not Prisma's default for a
+  // required relation, Restrict. `prisma validate` and `prisma migrate diff` both
+  // pass with either action, so nothing but this test catches the regression --
+  // and the regression is that deleting a ticket, which works today, would start
+  // failing with a foreign-key error the moment the commit link table exists.
+  describe('deleting a ticket that has commit links (T010)', () => {
+    it('succeeds and removes only the links, leaving the commit and branch intact', async () => {
+      const ticket = await createTicket({ name: 'Linked', complexity: 3 });
+      expect(ticket.status).toBe(201);
+      const other = await createTicket({ name: 'Untouched', complexity: 1 });
+      expect(other.status).toBe(201);
+
+      const branch = await prisma.gitBranch.create({
+        data: {
+          projectId,
+          name: '004-view-repo-git-tree',
+          isTrunk: false,
+          state: 'ACTIVE',
+          lastSyncedAt: new Date(),
+        },
+      });
+      const commit = await prisma.gitCommit.create({
+        data: {
+          projectId,
+          branchId: branch.id,
+          sha: 'a'.repeat(40),
+          message: 'feat: something',
+          authorName: 'juglarx',
+          committedAt: new Date(),
+          parentShas: ['b'.repeat(40)],
+        },
+      });
+      await prisma.gitCommitFile.create({
+        data: { commitId: commit.id, path: 'backend/prisma/schema.prisma', changeType: 'M' },
+      });
+      await prisma.gitCommitTicket.createMany({
+        data: [
+          { commitId: commit.id, ticketId: ticket.body.id },
+          { commitId: commit.id, ticketId: other.body.id },
+        ],
+      });
+      expect(await prisma.gitCommitTicket.count()).toBe(2);
+
+      const del = await request(app).delete(`/api/v1/tickets/${ticket.body.id}`).set(auth);
+      expect(del.status).toBe(200);
+      expect(del.body).toEqual({ deleted: true });
+
+      // Only the deleted ticket's link is gone.
+      expect(await prisma.gitCommitTicket.findMany({ select: { ticketId: true } })).toEqual([
+        { ticketId: other.body.id },
+      ]);
+      // The commit, its files and its branch are untouched: a ticket delete is
+      // not allowed to erase recorded history (FR-032).
+      expect(await prisma.gitCommit.count()).toBe(1);
+      expect(await prisma.gitCommitFile.count()).toBe(1);
+      expect(await prisma.gitBranch.count()).toBe(1);
+      expect(await prisma.ticket.count()).toBe(1);
+    });
+  });
 });

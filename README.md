@@ -33,6 +33,7 @@ and the **marketplace** that publishes the plugin.
 - [Opt a repo in](#opt-a-repo-in)
 - [Completion columns & automatic sweep](#completion-columns--automatic-sweep)
 - [Git branch on a ticket](#git-branch-on-a-ticket)
+- [View repo](#view-repo)
 - [Configuration](#configuration)
 - [Architecture](#architecture)
 - [🔒 Security](#-security)
@@ -162,6 +163,49 @@ as it was given, apart from trimming surrounding whitespace.
 
 Reporting a branch changes nothing else: no total, count or duration in any report or metric is
 derived from it.
+
+## View repo
+
+A project board's header carries a **View repo** control next to **View backlog** and
+**Add ticket**. It opens a read-only screen that draws the project's recorded git history as an
+SVG tree: the trunk runs as a single horizontal line, oldest commit on the left, and every other
+branch gets its own lane below it, forking from and — once merged — rejoining the trunk at the
+recorded commit. Clicking a commit circle opens its description, date, linked tickets and changed
+files; clicking a branch lane or its label opens the branch's tickets, changed files and a
+description composed from what was recorded about it (its name, state and commit messages) — no
+separate branch description is authored or stored. Any ticket link the screen had to guess rather
+than read from a report is labelled **inferred**, never presented as if it were reported.
+
+**Colour and precedence.** Each branch gets exactly one of four colours, decided by trying these
+rules in order and stopping at the first match:
+
+1. it's the trunk → **blue**, always, regardless of anything else reported about it;
+2. it has been merged into the trunk → **grey** — this is checked *before* rule 3, so a branch
+   that is both merged and has a dirty working tree is grey, not yellow;
+3. it has uncommitted working-tree changes, or has no commit of its own yet → **yellow**;
+4. otherwise → **green**.
+
+Having been pushed to a remote is deliberately **not** a colour and adds no fifth state — a pushed
+branch is coloured by the same four rules as any other.
+
+**It's a mirror, and it can be stale.** Nothing here is computed live from the repository; the
+screen only ever shows what a sync last reported, together with the time of that sync. A history
+that has never been synced shows an explanation of how to sync it, not a blank canvas or invented
+commits — and a failure to load is shown with its reason, never presented as an empty history.
+
+**Read-only, and single-tenant like the rest of the board.** The screen cannot create, modify or
+delete anything — there is no sync control on it, only instructions, because a sync button here
+would make the frontend a second write path into repository history. As with every other screen,
+there is no per-project or per-user ownership: any authenticated user sees the same mirror for
+every project (see [Security](#-security)).
+
+**Syncing and backfilling.** The agent is the only writer, through the `sync_git_history` MCP
+tool driven by the `lumberjack-tasks:ticket-sync` skill — never a hook, and never something the
+browser triggers. The skill syncs deliberately after committing and after changing branch. A
+one-time backfill walks the *whole* existing history the same way: branch by branch, trunk first,
+each with `git log --first-parent`, never `git log --all` — `--all` doesn't report which branch a
+commit belongs to, so it can't supply what a sync requires and can't be used for the backfill
+either.
 
 ## Configuration
 

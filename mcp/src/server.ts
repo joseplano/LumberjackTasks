@@ -3,6 +3,7 @@ import { registerProjectTools } from './tools/projects';
 import { registerTicketTools } from './tools/tickets';
 import { registerManagementTools } from './tools/management';
 import { registerReportTools } from './tools/reports';
+import { registerGitHistoryTools } from './tools/gitHistory';
 
 export function buildServer(): McpServer {
   const server = new McpServer({ name: 'lumberjack-tasks-mcp', version: '1.0.0' });
@@ -10,5 +11,6 @@ export function buildServer(): McpServer {
   registerTicketTools(server);
   registerManagementTools(server);
   registerReportTools(server);
+  registerGitHistoryTools(server);
   return server;
 }
