@@ -1,6 +1,6 @@
 {
   "bridgeVersion": "3.1.0",
-  "phase": "implemented_pending_manual_verification",
+  "phase": "merged_pending_manual_verification",
   "originalIdea": "Agrega la siguiente feature. En el proyecto: al lado del boton que dice crear un nuevo ticket que exista otro boton que diga view repo. Al hacer click ahi se entra en una pantalla que permite ver en forma de arbol la rama main de git y todas las ramas creadas a modo de historia. La representacion debe ser grafica por lo tanto debe representar un arbol la linea principal de main y las branches creadas; cada branch tendra un circulo pequeno que representara cada commit realizado. Al hacer click en el circulo muestra una ventana modal con los tickets commiteados, los archivos que lo componen y la fecha y la descripcion del commit. Al hacer click en el branch muestra una ventana modal con todos los tickets y archivos que van en ese branch y la descripcion pertinente. Si la rama ya fue mergeada con main se mostrara en color gris, si es activa (todavia se esta trabajando) se mostrara en verde. La main se mostrara en azul. Si la rama no esta commiteada va en amarillo; cuando se pushea a main y se mergea pasa a gris. El arbol se mostrara de izquierda a derecha y existira una barra en la parte inferior para poder desplazarla.",
   "approvedDesignPath": ".specify/bridge/approved-design.md",
   "activeFeatureDirectory": "specs/004-view-repo-git-tree",
@@ -94,8 +94,9 @@
       23,
       24
     ],
-    "column": "In development",
-    "tokensRegisteredOnParent": 145418
+    "column": "Committed",
+    "tokensRegisteredOnParent": 707683,
+    "note": "Committed, not Merge Main: the board has a Push column before Merge Main and nothing has been pushed. Also, moving the last board ticket into Merge Main would sweep the whole board."
   },
   "implementation": {
     "head": "35c1599",
@@ -120,5 +121,21 @@
       "scChecked": 12,
       "findings": "0 missing, 0 partial, 0 contradicts, 0 unrequested"
     }
+  },
+  "merge": {
+    "mergedToMain": true,
+    "mergeCommit": "7e42142",
+    "strategy": "--no-ff, matching the house convention (f3125c9, df37b90, 92d4063)",
+    "mergedAt": "2026-08-22",
+    "pushed": false,
+    "gateOnMainAfterMerge": {
+      "backend": "20 files / 356 tests",
+      "frontend": "29 files / 240 tests",
+      "mcp": "10 files / 93 tests",
+      "plugin": "22 tests",
+      "types": "backend tsc 0, mcp tsc 0, next build 0",
+      "migrations": "Database schema is up to date"
+    },
+    "caveat": "Merged on the human partner explicit instruction with T070 and T071 still unexecuted. Same pattern as feature 003, which was merged without its T014."
   }
 }
